@@ -15,7 +15,9 @@
 set -euo pipefail
 
 echo "== Installing dependencies =="
-pip install -r requirements.txt --break-system-packages --quiet
+python3 -m venv ~/.venvs/myproject
+source ~/.venvs/myproject/bin/activate
+pip install -r requirements.txt
 
 echo "== Validating datasets, prompts, and tool schemas (free, local, no cloud calls) =="
 python -m eval.validate_datasets
