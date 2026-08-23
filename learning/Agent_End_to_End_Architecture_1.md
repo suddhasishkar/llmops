@@ -32,47 +32,60 @@ documents and the tool result, and estimate the turn's token cost. Every
 step that can call a cloud service does, on every single request. There
 is no environment variable, no `stub`/`local` default, and no offline
 mode anywhere in this system — that is the single most important
-architectural fact about this rebuild, and Section 2 below reads it
-directly off the pipeline with nothing to toggle. See
+architectural fact about the whole system, and Section 2 below walks
+through exactly what that means in practice. See
 `docs/adr/0001-foundry-and-multiagent.md` for the full reasoning behind
-the Foundry migration and the Manager/Specialist split, and Section 5
-below for the current agent architecture in detail.
+the Foundry choice and the Manager/Specialist split, and Section 5
+below for the agent architecture in detail.
 
 ---
 
-## 2. No local fallback, anywhere — and why that's a rebuild, not a config change
+## 2. Every cloud call is real — nothing to toggle, nothing to fall back to
 
-An earlier version of this project gave every cloud integration point a
-free, local, deterministic default and treated the real Azure call as
-something you opted into with an environment variable
-(`NIMBUS_MODEL_BACKEND`, `NIMBUS_RETRIEVAL_BACKEND`,
-`NIMBUS_SAFETY_BACKEND`). In practice, that meant "cloud" was never
-actually the default anywhere no matter how the documentation was
-worded — a trainee, a CI job, or a deployed environment that forgot to
-set one env var silently ran against a local stub instead, with no error
-and no obvious signal that anything was different.
+Every cloud integration point in this system — the model calls,
+retrieval, and content-safety checks — has exactly one code path, and
+it's the real one. There's no environment variable that swaps in a
+local stand-in, and no default that quietly degrades to something
+cheaper or offline. If the real Azure credentials aren't configured, the
+system doesn't fall back to anything: it fails immediately, with a
+`RuntimeError` that names the exact missing environment variable.
 
-This rebuild does not flip those defaults. It **deletes the local code
-path entirely** for each of the three services:
+That matters because a fallback is only safe if everyone always notices
+they're on it. A trainee, a CI job, or a deployed environment that's
+missing one piece of configuration should never be able to run —
+quietly, successfully, with no error — against a weaker version of the
+system than the one that actually ships. Making the real path the
+*only* path removes that risk entirely. The cost is that every
+exercise, evaluation, and CI job that touches these three modules now
+needs live Azure credentials to run at all — there's no free, offline
+way to exercise them.
 
-| Module | What used to exist | What exists now |
-|---|---|---|
-| `app/agent/azure_openai_client.py` | A deterministic keyword-driven `llm_stub.py` model stand-in, selected by `NIMBUS_MODEL_BACKEND=stub` (the default) | Only a real `openai.OpenAI`-compatible client factory pointed at the LiteLLM Proxy gateway (`infra/resources.bicep`'s `litellmGateway` Container App), not at Microsoft Foundry directly — see `docs/adr/0002-llm-gateway-and-observability.md`. The gateway is what actually authenticates to Foundry, via the same managed identity every other client in this repo uses. `manager_agent.route()` and each specialist's `decide()` always call it — one shared client factory, three callers. |
-| `app/retrieval/retrieval.py` | A local TF-IDF retriever over `knowledge_docs/`, selected by `NIMBUS_RETRIEVAL_BACKEND=local` (the default), plus a local `.index_state.json` file simulating drift | Only a real Azure AI Search `SearchClient`. `retrieve()` always queries it; `check_freshness()` always compares against the live index, not a local file. |
-| `app/agent/content_safety.py` | A keyword-matching stand-in, selected by `NIMBUS_SAFETY_BACKEND=stub` (the default) | Only a real `ContentSafetyClient.analyze_text()` call. `check_content()` always calls it. |
+Concretely, here's what each of the three integration points does:
 
-There is nothing left to default to. A trainee, a CI job, or a deployed
-Container App either has real Azure credentials configured, or every
-command in this repository fails loudly and immediately with a
-`RuntimeError` naming the exact missing environment variable — never a
-silent fallback to a different, weaker code path. The trade-off this
-buys: every lab exercise, every unit-adjacent structural check
-(`tests/unit/`, `tests/validate_*.py`) still runs free and offline
-because it never calls these modules at all, but every evaluation script
-and every CI job that *does* exercise the agent (`eval/run_*.py`, the
-`cloud-eval` GitHub Actions job) now requires live Azure credentials —
-see `README.md`'s "CI/CD and cloud credentials" section for how that's
-provisioned once for a shared CI environment, not per-PR.
+- **Model calls** (`app/agent/azure_openai_client.py`) — a real
+  `openai.OpenAI`-compatible client factory, pointed at the LiteLLM
+  Proxy gateway (`infra/resources.bicep`'s `litellmGateway` Container
+  App), not at Microsoft Foundry directly — see
+  `docs/adr/0002-llm-gateway-and-observability.md`. The gateway is what
+  actually authenticates to Foundry, using the same managed identity
+  every other client in this repo uses. `manager_agent.route()` and
+  each specialist's `decide()` all call it — one shared client factory,
+  three callers.
+- **Retrieval** (`app/retrieval/retrieval.py`) — a real Azure AI Search
+  `SearchClient`. `retrieve()` always queries it; `check_freshness()`
+  always compares against the live index, never a local file.
+- **Content safety** (`app/agent/content_safety.py`) — a real
+  `ContentSafetyClient.analyze_text()` call. `check_content()` always
+  calls it.
+
+One practical thing worth knowing up front: every lab exercise and
+structural check that never touches these three modules (`tests/unit/`,
+`tests/validate_*.py`) still runs free and offline, because it simply
+doesn't call them. But every evaluation script and every CI job that
+*does* exercise the agent (`eval/run_*.py`, the `cloud-eval` GitHub
+Actions job) needs live Azure credentials to run — see `README.md`'s
+"CI/CD and cloud credentials" section for how that's provisioned once,
+for a shared CI environment, not per PR.
 
 ---
 
@@ -171,16 +184,16 @@ provisioned once for a shared CI environment, not per-PR.
 ```
 
 Every one of the six real spans above calls a real service on every
-single request — this pipeline behaves identically in a unit test'
-mock, a lab exercise, and production, because it is, byte-for-byte, the
-same code in all three; the only thing that changes between "your
-personal lab environment," "the shared CI eval environment," and any of
-the three deployed environments (`nimbus-dev`/`nimbus-staging`/
-`nimbus-production`) is which Azure resource's endpoint the environment
-variables point at. Two real model calls now happen per turn instead of
-one (manager + specialist) — the direct, honest cost/latency trade-off
-of the Manager/Specialist split, named plainly in
-`docs/adr/0001-foundry-and-multiagent.md` rather than hidden.
+single request. That means this pipeline behaves identically in a lab
+exercise and in production, because it's the same code, byte for byte,
+in both — the only thing that changes between your own sandbox, the
+shared CI eval environment, and any of the three deployed environments
+(`nimbus-dev`/`nimbus-staging`/`nimbus-production`) is which Azure
+resource's endpoint the environment variables point at. Two real model
+calls happen per turn, not one — the manager routes, then the
+specialist decides — and that's a real cost/latency trade-off, named
+plainly in `docs/adr/0001-foundry-and-multiagent.md` rather than glossed
+over.
 
 ---
 
@@ -253,17 +266,19 @@ of the Manager/Specialist split, named plainly in
 
 This system routes every turn through two separate real model calls: a
 `ManagerAgent` that only decides "billing or account," then a second
-call to whichever specialist agent that routed to. See
+call to whichever specialist it routed to. See
 `docs/adr/0001-foundry-and-multiagent.md` for the full decision record;
 this section is the architectural detail.
 
-An earlier, intermediate version of this project collapsed this down to
-a single agent, one system prompt, one function-calling call per turn,
-specifically to fit a 30-minute, single-lab exercise ("read one prompt,
-find one missing sentence, fix it"). That constraint was dropped once
-this project's purpose changed from a timed lab to a client-presentable
-platform reference — the Manager/Specialist split you see today is the
-reintroduced, more realistic production shape.
+The split exists because one agent juggling both billing and account
+logic in a single prompt means every rule for one domain has to coexist
+with every rule for the other, competing for the same model's attention
+in the same instructions. Separating the routing decision from the
+domain-specific decision means BillingAgent's rules never have to share
+space with AccountAgent's — each specialist only ever has to reason
+about its own tools and its own policy. The cost is a second model call
+per turn, and that trade-off is named explicitly below rather than left
+implicit.
 
 **ManagerAgent** (`app/agent/manager_agent.py`, `system_prompt_manager.md`)
 — routing only. Its model is offered exactly two functions
@@ -373,13 +388,13 @@ and Container App min replicas differ per environment, and
  └───────────────────────────────────────────────────────────────────┘
 ```
 
-**This diagram predates ADR 0002/0005 and is kept above unmodified for
-the `api` container's own downstream connections** (Foundry/Search/
-Content Safety RBAC is unchanged by either ADR). What's missing from it
-— and drawn separately below rather than shoehorned into the box art
-above — is that `api`'s ONLY outbound LLM call target changed: it no
-longer calls Foundry directly, it calls a second Container App, which is
-the thing that actually calls Foundry:
+The diagram above is the overall resource topology, and the `api`
+container's connections into Search and Content Safety are exactly as
+drawn there. What it doesn't show is the specific path an LLM call
+takes: `api` never calls Foundry directly. It calls a second Container
+App — the gateway — and the gateway is what actually reaches Foundry.
+That path is drawn separately below, since it didn't fit cleanly into
+the box art above:
 
 ```
  ┌──────────────────────┐   RBAC: Key Vault      ┌───────────────────┐
@@ -492,7 +507,7 @@ image that's currently running.
   down (private endpoints, disabled public access) before this template
   takes real customer traffic. The gateway is protected only by its
   master key, not network isolation. There is no identity/JWT validation
-  layer anywhere in this rebuild — `customer_id`
+  layer anywhere in this system — `customer_id`
   is trusted exactly as the caller supplies it, on every request, in
   every environment, including `nimbus-production`. This is a deliberate
   scoping decision, not an oversight: `nimbus-production` in this project
@@ -524,8 +539,8 @@ image that's currently running.
   while `nimbus-production` remains a presentation-grade environment
   rather than one taking real customer traffic (see Section 7).
 - The Container App deploys a single active revision
-  (`activeRevisionsMode: Single`) — no canary/staged traffic split in
-  this rebuild yet. A production deployment taking real traffic should
+  (`activeRevisionsMode: Single`) — no canary/staged traffic split
+  yet. A production deployment taking real traffic should
   reintroduce one before promoting a new image to 100% of traffic — this
   is the platform maturity roadmap's Phase B, not yet built.
 - The `code-scanning` CI stage (`scripts/mock_security_scan.py`) is a
