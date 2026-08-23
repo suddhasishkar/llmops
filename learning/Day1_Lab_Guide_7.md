@@ -56,6 +56,29 @@ done before anyone in the room reaches Part 4.3 ("See it enforced in
 CI"), since that's the first point in the lab that actually exercises
 the pipeline 0.9 sets up.
 
+**Why Track B doesn't make Track A unnecessary, even though both end in
+`azd provision`/`azd deploy`:** it's tempting to look at 0.9 and think
+"CI creates infrastructure too, so why am I also creating infrastructure
+by hand?" The two builds are the same *commands* pointed at two
+different environments doing two different jobs, and one of them can't
+exist yet at the point you'd need it:
+
+| | Track A — `nimbus-lab[-initials]` | Track B — `nimbus-dev`/`staging`/`production` |
+|---|---|---|
+| Created by | You, running `azd up` yourself (0.6) | GitHub Actions, inside the `deploy-*` jobs, only after a merge to `main` |
+| Exists | Before you know what the fix is | Only after a fix has already been merged |
+| What it's for | Somewhere real for the `python -m app.agent.agent ...` and `python -m eval.run_*` commands in Parts 2–5 to actually call | Demonstrating an already-approved change getting promoted through a real pipeline (Part 4.3, optional) |
+| You interact with it | Directly, from your own terminal, via `source <(azd env get-values)` | Not really — it's the shared repo's CI-managed deployment |
+
+Parts 2–5 are you *finding* the fix — diagnosing why `candidate_broken`
+fails, confirming `candidate_fixed` resolves it. None of that can happen
+against `nimbus-dev`/`staging`/`production`, because those three don't
+get created until *after* a merge to `main` — and you can't merge a fix
+to `main` before you've found it. So Track B is never a substitute for
+Track A; it's downstream of it. Skipping your own `azd up` doesn't mean
+"let CI do it instead" — it means you'd have nothing to run the entire
+diagnosis phase of the lab against.
+
 Do Track A the evening before, or first thing before the training
 session begins. It is entirely automated — one command does the
 provisioning, building, and deploying — but Azure resource creation and
@@ -298,13 +321,33 @@ straight to Part 1, the timed, in-class, ~30-minute lab.
 
 ### 0.9 — Wire up CI/CD (instructor/admin, once for the whole class — trainees, skip to Part 1)
 
-This section has three parts, in this order: (a) run `azd pipeline
+This section has four parts, in this order: (a) run `azd pipeline
 config` for the deploy side, (b) stand up a separate shared evaluation
 environment and wire its credentials in by hand, (c) create the GitHub
-Environments that gate production. Do them in that order — (b) and (c)
-both add to the same repo settings screen `azd pipeline config` in (a)
-also writes to, and it's easier to see what's yours versus what `azd`
-generated if `azd` goes first.
+Environments that gate production, (d) prove the whole thing actually
+works before anyone in the room depends on it. Do them in that order —
+(b) and (c) both add to the same repo settings screen `azd pipeline
+config` in (a) also writes to, and it's easier to see what's yours
+versus what `azd` generated if `azd` goes first; (d) has to come last
+because it exercises everything (a)–(c) set up.
+
+**Checklist — every one of these must be true before Part 4.3 will
+work.** Miss any single row and the failure surfaces inside a GitHub
+Actions log during class, which is a much worse place to debug it than
+here. Each row names which sub-step sets it and how to confirm it
+independently:
+
+| # | Requirement | Set in | Confirm with |
+|---|---|---|---|
+| 1 | `gh` CLI installed and authenticated with `repo` + `workflow` scope | 0.9.a | `gh auth status` |
+| 2 | Deploy app registration + OIDC federated credential exists, subject scoped to this repo's `main` branch | 0.9.a (`azd pipeline config`) | GitHub → **Settings → Secrets and variables → Actions** shows `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID` (Secrets tab) and `AZURE_LOCATION` (Variables tab) |
+| 3 | `AZURE_LOCATION` is a region with real `gpt-5-mini` capacity | 0.9.a | `az cognitiveservices account list-skus --kind OpenAI --location <region> --query "[?name=='S0']" -o table` — same check as Part 0.6 |
+| 4 | Shared `nimbus-eval` environment is provisioned and live | 0.9.b (`azd up`) | `azd env select nimbus-eval && azd env get-values` returns real, non-empty endpoint values |
+| 5 | A **separate** eval app registration + OIDC federated credential exists, subject `repo:<org>/<repo>:pull_request` — not the same credential as row 2 | 0.9.b | GitHub → **Settings → Secrets and variables → Actions** shows the four `EVAL_AZURE_*` secrets and four `EVAL_*` variables |
+| 6 | GitHub Environments `development`, `staging`, `production` exist, named exactly (case-sensitive, must match the workflow file's `environment:` keys) | 0.9.c | GitHub → **Settings → Environments** |
+| 7 | A required reviewer is added on **all three** environments, not just production | 0.9.c | Same screen, each environment's "Deployment protection rules" |
+| 8 | GitHub Actions is enabled on the repo at all | repo default, check once | GitHub → **Settings → Actions → General** → "Allow all actions and reusable workflows" |
+| 9 | The full pipeline has actually run once, end to end, successfully | 0.9.d | see below — this is the only row that isn't "did I configure X," it's "does it actually work" |
 
 #### 0.9.a — Deploy credentials, via `azd`
 
@@ -449,6 +492,52 @@ require the four PR checks (`deterministic-tests`, `code-scanning`,
 Full explanation of the credential architecture (which job uses which
 kind of Azure credential, and why): README.md "CI/CD and cloud
 credentials."
+
+#### 0.9.d — Verify the pipeline end-to-end (do this before class, not during it)
+
+0.9.a–0.9.c are all "did I configure this correctly" steps — none of
+them prove the pipeline actually runs. This step does, the same way
+Part 0.8's `verify_deployment.py` proves Track A's sandbox actually
+works rather than just existing. Do this from a scratch branch, using
+exactly the mechanism Part 4.3 uses in class, so a failure here is the
+same failure trainees would otherwise hit live:
+
+1. Create a throwaway branch, set `PROMPT_VERSION: candidate_broken` in
+   `.github/workflows/ai-release.yml`'s `env:` block, commit, push, and
+   open a PR against `main`.
+2. Watch all four PR-time checks. Expected: `deterministic-tests` and
+   `code-scanning` pass (offline, always should); `cloud-eval` passes its
+   own steps and produces real numbers (if this fails, it's row 4 or 5 of
+   the checklist above — `nimbus-eval` isn't live, or the eval
+   credential/subject is wrong); `release-gate` reports **HOLD** with a
+   `tool_selection_accuracy` breach, and posts that as a PR comment. A
+   HOLD here is correct and expected — `candidate_broken` is *supposed*
+   to fail. What you're proving is that the jobs ran and produced the
+   right decision, not that everything passes.
+3. Change `PROMPT_VERSION` to `baseline` (or `candidate_fixed`), push
+   again to the same PR. Expected: all four checks now pass, `release-gate`
+   reports **PROMOTE**.
+4. Merge the PR. Expected: `deploy-dev` appears in the PR's
+   **Deployments** view in a **Waiting** state — if it fails immediately
+   instead of waiting, row 2 or row 3 is wrong (bad credential, or a
+   region with no `gpt-5-mini` capacity). Approve it. Expected: it runs
+   `azd provision`/`azd deploy`/the canary rollout and succeeds, `nimbus-dev`
+   now exists. Approve `deploy-staging`, then `deploy-production`, the
+   same way — each should wait for its own separate approval (row 7) and
+   then succeed.
+5. Revert `PROMPT_VERSION` back to `baseline` in `main` afterward, and
+   optionally `azd down --purge` the three environments this smoke test
+   created if you don't want them standing (billing) through the rest of
+   the class — trainees don't need `nimbus-dev`/`staging`/`production` to
+   exist for anything in Parts 1–5, only Part 4.3 exercises them, and
+   that step recreates them itself on demand.
+
+If every step above behaved as described, the pipeline is proven end to
+end and Part 4.3 will work the same way live. If something didn't match
+the expected result, match the symptom back to the checklist row it
+maps to rather than re-running the whole thing and hoping — a partial
+CI/CD setup fails in ways that look similar (a red X on a job) but come
+from very different rows.
 
 ---
 
