@@ -11,15 +11,15 @@ name: AI Release Pipeline
 # Three kinds of Azure credentials/targets are used in this file, and it
 # matters which job uses which:
 #   - `deterministic-tests` and `code-scanning` run entirely offline -- no
-#     Azure credentials, no network calls, free on every PR.
+#     Azure credentials, no network calls, free on every PR, always on.
 #   - `cloud-eval` calls REAL Azure OpenAI/Foundry, Azure AI Search, and
 #     Azure AI Content Safety, using the credentials of a persistent
 #     SHARED EVAL environment (repo secrets/variables prefixed EVAL_*) --
 #     not any of the three deployed environments below. There is no
-#     mocking of agent behavior anywhere in this pipeline: a model call, a
-#     retrieval call, and a content-safety call all really happen on every
-#     PR. See README.md "CI/CD and cloud credentials" for how to stand up
-#     that shared eval environment once.
+#     mocking of agent behavior anywhere in this pipeline when it runs: a
+#     model call, a retrieval call, and a content-safety call all really
+#     happen. See README.md "CI/CD and cloud credentials" for how to
+#     stand up that shared eval environment once.
 #   - `deploy-dev` / `deploy-staging` / `deploy-production` use the
 #     azd-managed OIDC credentials (AZURE_CLIENT_ID/AZURE_TENANT_ID/
 #     AZURE_SUBSCRIPTION_ID) that `azd pipeline config` sets up, and only
@@ -49,6 +49,28 @@ name: AI Release Pipeline
 # swap-in mapping -- Semgrep/Gitleaks/Trivy/Checkov/SonarQube) -- a
 # deliberate choice for this presentation asset, not a stand-in claiming
 # real security coverage.
+#
+# OPT-IN COST GATE: `cloud-eval` (and therefore everything that depends on
+# it -- `release-gate`, and in turn `deploy-dev`/`deploy-staging`/
+# `deploy-production`) only runs if the repo variable `ENABLE_CLOUD_EVAL`
+# is set to the literal string `true`. It is unset -- meaning off -- by
+# default. This is deliberate, not an oversight: `cloud-eval` is the one
+# job in this file with a genuine, unavoidable per-run cost (real Azure
+# OpenAI/Search/Content Safety calls against the shared eval environment),
+# and Day 1's actual required deliverables (Day1_Lab_Guide.md Part 5)
+# never depend on this workflow running at all -- every trainee produces
+# them locally, against their own sandbox, in Parts 2-4. Leave
+# ENABLE_CLOUD_EVAL unset and this entire file costs nothing to have
+# present in the repo: `deterministic-tests` and `code-scanning` still run
+# free on every PR, and `cloud-eval`/`release-gate`/all three `deploy-*`
+# jobs simply show as "skipped" (not failed -- a job whose `needs` was
+# skipped is skipped too, by GitHub Actions' default behavior, never
+# treated as a failure). Turn it on (Settings -> Secrets and variables ->
+# Actions -> Variables -> new variable ENABLE_CLOUD_EVAL = true) only if
+# you specifically want Part 4.3's "see it enforced in CI" demonstration
+# AND have already done Day1_Lab_Guide.md 0.9.b to stand up the shared
+# eval environment those EVAL_* credentials point at -- see 0.9's
+# checklist for the full list of what else has to be true first.
 
 on:
   pull_request:
@@ -104,7 +126,8 @@ jobs:
           name: scan-report-${{ github.sha }}
           path: eval/results/scan_report.json
 
-  cloud-eval:                       # real Azure OpenAI/Foundry + Search + Content Safety, every PR
+  cloud-eval:                       # OPT-IN, off by default -- see "OPT-IN COST GATE" header note
+    if: vars.ENABLE_CLOUD_EVAL == 'true'
     needs: [deterministic-tests, code-scanning]
     runs-on: ubuntu-latest
     env:
@@ -141,7 +164,7 @@ jobs:
           name: eval-results-${{ github.sha }}
           path: eval/results/
 
-  release-gate:
+  release-gate:                     # inherits the ENABLE_CLOUD_EVAL gate: skipped, not failed, whenever cloud-eval is skipped
     needs: cloud-eval
     runs-on: ubuntu-latest
     outputs:
