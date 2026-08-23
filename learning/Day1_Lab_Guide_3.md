@@ -84,13 +84,6 @@ All local checks passed. ... Next step:
   azd up
 ```
 
-Alternate approach:
-```
-python3 -m venv ~/.venvs/myproject
-source ~/.venvs/myproject/bin/activate
-pip install -r requirements.txt
-```
-
 If this fails, the error names the exact file and field that's wrong —
 there is no cloud dependency in this step at all, so a failure here is
 always a real bug in the repo state you have, not a flaky cloud call.
@@ -271,6 +264,27 @@ anything fails.
 
 **Stop here.** Part 0 is complete. Everything below is the timed,
 in-class, ~30-minute lab.
+
+### 0.9 — Wire up CI/CD (instructor/admin, once for the whole class — skip if you're a trainee)
+
+```bash
+azd pipeline config
+```
+
+Sets `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID`/`AZURE_LOCATION`
+for the three `deploy-*` jobs automatically. Then add these by hand in
+GitHub (**Settings → Secrets and variables → Actions**):
+
+| Add | Kind | Value |
+|---|---|---|
+| `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | app registration for a one-time `azd env new nimbus-eval && azd up`, OIDC trusting `repo:<org>/<repo>:pull_request` |
+| `EVAL_AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from that `nimbus-eval` environment |
+
+Then **Settings → Environments**: create `development`, `staging`,
+`production` (names must match exactly), and add a **required reviewer**
+on `production` only. Optional: **Settings → Branches**, protect `main`,
+require the four PR checks. Full explanation: README.md "CI/CD and cloud
+credentials."
 
 ---
 
