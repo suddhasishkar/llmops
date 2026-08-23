@@ -105,10 +105,28 @@ jobs:
       - run: python -m tests.validate_tool_schemas
       - run: python -m eval.validate_datasets
       - name: Verify requirements.txt matches requirements.in (fails if the lock drifted)
+        # Pin pip-tools itself -- pip-compile's resolution behavior isn't
+        # guaranteed stable across its own versions (e.g. --strip-extras
+        # becomes the default in 8.0.0), so an unpinned `pip install
+        # pip-tools` can flip this check's output for reasons that have
+        # nothing to do with requirements.in. --no-strip-extras locks in
+        # today's behavior explicitly, regardless of which pip-tools ever
+        # ends up installed here.
+        #
+        # Copying the CURRENT requirements.txt into /tmp/lockcheck/ (not
+        # just requirements.in) is what makes this check reproducible:
+        # pip-compile treats an existing output file at its target path as
+        # the preferred baseline and only changes a pin when
+        # requirements.in actually forces it to. Without that file present,
+        # pip-compile has nothing to anchor to and does a fully fresh
+        # resolve against whatever's newest on PyPI right now -- so this
+        # step would fail the moment ANY transitive dependency published a
+        # new release upstream, even with zero changes to requirements.in.
         run: |
-          pip install pip-tools --break-system-packages --quiet
-          mkdir -p /tmp/lockcheck && cp requirements.in /tmp/lockcheck/requirements.in
-          (cd /tmp/lockcheck && pip-compile requirements.in -o requirements.txt --quiet)
+          pip install "pip-tools==7.6.1" --break-system-packages --quiet
+          mkdir -p /tmp/lockcheck
+          cp requirements.in requirements.txt /tmp/lockcheck/
+          (cd /tmp/lockcheck && pip-compile requirements.in -o requirements.txt --quiet --no-strip-extras)
           diff -u requirements.txt /tmp/lockcheck/requirements.txt
       - name: Dependency CVE scan (blocking -- see roadmap Section 4.1)
         run: pip-audit -r requirements.txt
