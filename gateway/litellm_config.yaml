@@ -1,0 +1,54 @@
+# gateway/litellm_config.yaml -- LiteLLM Proxy (MIT license,
+# github.com/BerriAI/litellm) config for the Nimbus Support Copilot LLM
+# gateway. Every agent role (app/agent/manager_agent.py, billing_agent.py,
+# account_agent.py) calls THIS proxy instead of Microsoft Foundry
+# directly, via app/agent/azure_openai_client.py -- see
+# docs/adr/0002-llm-gateway-and-observability.md for why and for the
+# trade-offs named below.
+#
+# Deliberately stateless: no DATABASE_URL is set anywhere in this
+# project (see infra/resources.bicep's litellmGateway resource -- no
+# Postgres is provisioned for it), so this runs LiteLLM's plain
+# OpenAI-compatible proxy mode: routing, master-key auth, and callbacks
+# all work; per-caller virtual keys, budgets, and spend-tracking do NOT
+# (they require the optional Postgres-backed database LiteLLM supports).
+# One shared master key for the whole gateway is an acceptable
+# simplification for a presentation-grade asset -- revisit before using
+# this pattern for a real multi-tenant deployment.
+
+model_list:
+  - model_name: nimbus-copilot-chat # must match AZURE_OPENAI_DEPLOYMENT / Foundry's chatDeployment.name -- see infra/resources.bicep
+    litellm_params:
+      model: azure/nimbus-copilot-chat
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT # the Foundry account endpoint, injected by infra/resources.bicep -- NOT this gateway's own endpoint
+      api_version: "2024-06-01"
+      # No api_key here, anywhere. AZURE_CREDENTIAL=ManagedIdentityCredential
+      # + AZURE_CLIENT_ID (both set on this container app in
+      # infra/resources.bicep) tell LiteLLM to build its Azure token
+      # provider from the same user-assigned managed identity every
+      # other service in this repo already authenticates with -- see
+      # litellm_settings.enable_azure_ad_token_refresh below and
+      # docs/adr/0002-llm-gateway-and-observability.md for the exact
+      # mechanism this was verified against.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # No database_url set -- intentional, see the module docstring above.
+
+litellm_settings:
+  enable_azure_ad_token_refresh: true
+  drop_params: true
+  # Langfuse tracing (MIT-licensed core, free Langfuse Cloud Hobby tier
+  # by default -- see the ADR) is opt-in via LANGFUSE_PUBLIC_KEY /
+  # LANGFUSE_SECRET_KEY, both left empty by infra/resources.bicep's
+  # langfusePublicKey/langfuseSecretKey parameters until you create a
+  # free Langfuse Cloud project and set them with:
+  #   azd env set LANGFUSE_PUBLIC_KEY pk-lf-...
+  #   azd env set LANGFUSE_SECRET_KEY sk-lf-...
+  # LiteLLM callbacks are fire-and-forget against the underlying
+  # request, but this project has not independently verified LiteLLM's
+  # exact behavior when success_callback references "langfuse" and the
+  # two env vars are empty (most likely: harmless logged errors on every
+  # call, not a failed request) -- if you are not using Langfuse yet,
+  # comment out the line below rather than relying on that assumption.
+  success_callback: ["langfuse"]

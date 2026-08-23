@@ -1,0 +1,308 @@
+name: AI Release Pipeline
+
+# This file is what `azd pipeline config` generates and wires up with
+# OIDC federated credentials automatically -- see Day1_Lab_Guide.md Part 4
+# ("Wire up CI/CD") for the exact one-command setup. The eval/gate jobs
+# below are layered on top of azd's standard provision+deploy jobs; if you
+# re-run `azd pipeline config` it will not remove them, only refresh the
+# AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID secrets and
+# variables the deploy jobs below reference.
+#
+# Three kinds of Azure credentials/targets are used in this file, and it
+# matters which job uses which:
+#   - `deterministic-tests` and `code-scanning` run entirely offline -- no
+#     Azure credentials, no network calls, free on every PR.
+#   - `cloud-eval` calls REAL Azure OpenAI/Foundry, Azure AI Search, and
+#     Azure AI Content Safety, using the credentials of a persistent
+#     SHARED EVAL environment (repo secrets/variables prefixed EVAL_*) --
+#     not any of the three deployed environments below. There is no
+#     mocking of agent behavior anywhere in this pipeline: a model call, a
+#     retrieval call, and a content-safety call all really happen on every
+#     PR. See README.md "CI/CD and cloud credentials" for how to stand up
+#     that shared eval environment once.
+#   - `deploy-dev` / `deploy-staging` / `deploy-production` use the
+#     azd-managed OIDC credentials (AZURE_CLIENT_ID/AZURE_TENANT_ID/
+#     AZURE_SUBSCRIPTION_ID) that `azd pipeline config` sets up, and only
+#     run on push to main. All three currently share ONE app
+#     registration/federated credential (minimum-cost, single-subscription
+#     setup -- see docs/adr/0001-foundry-and-multiagent.md) rather than a
+#     separate service principal per environment; that's a documented
+#     trade-off, not an oversight -- a stricter setup would scope a
+#     distinct identity per environment with only that resource group's
+#     Contributor role.
+#
+# code-scanning is a clearly-labeled PLACEHOLDER stage (see
+# scripts/mock_security_scan.py's own docstring for the full real-tool
+# swap-in mapping -- Semgrep/Gitleaks/Trivy/Checkov/SonarQube) -- a
+# deliberate choice for this presentation asset, not a stand-in claiming
+# real security coverage.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write      # required for OIDC cloud auth; no other write scopes granted
+  pull-requests: write # to post evaluation summaries as PR comments
+
+concurrency:
+  group: ai-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RELEASE_SHA: ${{ github.sha }}
+  PROMPT_VERSION: baseline   # override to candidate_broken / candidate_fixed on a lab branch
+
+jobs:
+  deterministic-tests:              # free, offline, every PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt --break-system-packages
+      - run: ruff check . || true   # ruff config intentionally permissive for training repo
+      - run: pytest tests/unit -q
+      - run: python -m tests.validate_prompt_templates
+      - run: python -m tests.validate_tool_schemas
+      - run: python -m eval.validate_datasets
+      - name: Verify requirements.txt matches requirements.in (fails if the lock drifted)
+        run: |
+          pip install pip-tools --break-system-packages --quiet
+          mkdir -p /tmp/lockcheck && cp requirements.in /tmp/lockcheck/requirements.in
+          (cd /tmp/lockcheck && pip-compile requirements.in -o requirements.txt --quiet)
+          diff -u requirements.txt /tmp/lockcheck/requirements.txt
+      - name: Dependency CVE scan (blocking -- see roadmap Section 4.1)
+        run: pip-audit -r requirements.txt
+
+  code-scanning:                    # free, offline, every PR -- PLACEHOLDER, see header note
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Run placeholder security scan (NOT a real scanner -- see script docstring)
+        run: python -m scripts.mock_security_scan --out eval/results/scan_report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-report-${{ github.sha }}
+          path: eval/results/scan_report.json
+
+  cloud-eval:                       # real Azure OpenAI/Foundry + Search + Content Safety, every PR
+    needs: [deterministic-tests, code-scanning]
+    runs-on: ubuntu-latest
+    env:
+      AZURE_OPENAI_ENDPOINT: ${{ vars.EVAL_AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_DEPLOYMENT: ${{ vars.EVAL_AZURE_OPENAI_DEPLOYMENT }}
+      AZURE_SEARCH_ENDPOINT: ${{ vars.EVAL_AZURE_SEARCH_ENDPOINT }}
+      AZURE_CONTENT_SAFETY_ENDPOINT: ${{ vars.EVAL_AZURE_CONTENT_SAFETY_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt --break-system-packages
+      - name: Azure login (OIDC, shared eval environment)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.EVAL_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.EVAL_AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.EVAL_AZURE_SUBSCRIPTION_ID }}
+      - name: Retrieval smoke test against the real index
+        run: python -m eval.run_retrieval_smoke --dataset eval/datasets/rag_eval.jsonl
+      - name: Full LLM eval (real model calls)
+        run: python -m eval.run_llm_eval --dataset eval/datasets/rag_eval.jsonl --prompt-version ${{ env.PROMPT_VERSION }} --out eval/results/llm_eval.json
+      - name: Agent trajectory eval (real Manager+Specialist model calls, real tool calls)
+        run: python -m eval.run_agent_trajectory_eval --dataset eval/datasets/tool_trajectory_eval.jsonl --prompt-version ${{ env.PROMPT_VERSION }} --out eval/results/agent_eval.json
+      - name: Safety regression (real Content Safety calls)
+        run: python -m eval.run_safety_regression --dataset eval/datasets/safety_regression.jsonl --dataset eval/datasets/prompt_injection.jsonl --out eval/results/safety_eval.json
+      - name: LLM-as-judge eval (real model-graded scoring, INFORMATIONAL ONLY -- see eval/run_llm_judge_eval.py, never blocks the release gate)
+        continue-on-error: true
+        run: python -m eval.run_llm_judge_eval --dataset eval/datasets/rag_eval.jsonl --out eval/results/llm_judge_eval.json
+      - name: Index freshness check
+        run: python -m eval.check_index_freshness
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.sha }}
+          path: eval/results/
+
+  release-gate:
+    needs: cloud-eval
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt --break-system-packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: eval-results-${{ github.sha }}
+          path: eval/results
+      - name: Evaluate against release-policy.yaml
+        id: decide
+        run: python -m eval.apply_release_policy --policy release-policy.yaml --results eval/results/llm_eval.json eval/results/agent_eval.json eval/results/safety_eval.json --out eval/results/decision.json
+      - name: Publish evaluation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-evidence-${{ github.sha }}
+          path: eval/results/
+      - name: Post decision to PR
+        if: github.event_name == 'pull_request'
+        run: python -m eval.post_pr_summary --decision eval/results/decision.json --judge-report eval/results/llm_judge_eval.json
+      - name: Fail pipeline on reject/hold
+        run: python -m eval.gate_or_fail --decision eval/results/decision.json
+
+  # ---------------------------------------------------------------------
+  # THREE-ENVIRONMENT PROMOTION -- dev (auto) -> staging (auto, after dev
+  # verifies) -> production (manual-approved GitHub Environment). Same
+  # built artifact (this commit's SHA) is promoted through all three, not
+  # rebuilt per environment. See docs/adr/0001-foundry-and-multiagent.md's
+  # environment-sizing table for why dev/staging/production get different
+  # Search/Content Safety/Foundry-capacity/min-replica settings below --
+  # this is the minimum-cost, presentation-grade sizing, not production
+  # sizing for real customer traffic.
+  #
+  # `azd env new` is re-run every job because CI runners are ephemeral --
+  # there is no persisted `.azure/<env>/` state directory across runs.
+  # This is safe/idempotent because `resourceToken` (infra/main.bicep) is
+  # a deterministic hash of subscription+envName+location, so the same
+  # environment name always resolves to the same resource group
+  # (`rg-nimbus-<env>`) and `azd provision` updates it in place rather
+  # than creating a duplicate.
+  # ---------------------------------------------------------------------
+
+  deploy-dev:
+    needs: release-gate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: development
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-azd@v2
+      - name: Log in with azd (federated / OIDC, no secrets on disk)
+        run: |
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --federated-credential-provider "github" \
+            --tenant-id "$AZURE_TENANT_ID"
+      - name: Log in with az CLI too (same OIDC federated credential -- scripts/canary_deploy.sh needs `az containerapp` commands azd itself doesn't expose)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Select or create the nimbus-dev azd environment
+        run: azd env select nimbus-dev || azd env new nimbus-dev --no-prompt --location "$AZURE_LOCATION" --subscription "$AZURE_SUBSCRIPTION_ID"
+      - name: Set dev sizing (minimum cost -- the one Free-tier Search service in the subscription)
+        run: |
+          azd env set SEARCH_SKU free
+          azd env set OPENAI_CAPACITY 1
+          azd env set CONTENT_SAFETY_SKU S0
+          azd env set CONTAINER_APP_MIN_REPLICAS 0
+      - name: azd provision (idempotent -- only changes what drifted)
+        run: azd provision --no-prompt
+      - name: azd deploy (build image, push to ACR, create new revision -- 0% traffic until canary-verified below)
+        run: azd deploy --no-prompt
+      - name: Canary rollout with automated rollback
+        run: |
+          python -m pip install --quiet --break-system-packages -r requirements.txt
+          RESOURCE_GROUP=$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2- | tr -d '"')
+          APP_NAME=$(azd env get-values | grep -m1 '^AZURE_CONTAINER_APP_API_NAME' | cut -d'=' -f2- | tr -d '"')
+          bash scripts/canary_deploy.sh "$RESOURCE_GROUP" "$APP_NAME"
+
+  deploy-staging:
+    needs: deploy-dev
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-azd@v2
+      - name: Log in with azd (federated / OIDC, no secrets on disk)
+        run: |
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --federated-credential-provider "github" \
+            --tenant-id "$AZURE_TENANT_ID"
+      - name: Log in with az CLI too (same OIDC federated credential -- scripts/canary_deploy.sh needs `az containerapp` commands azd itself doesn't expose)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Select or create the nimbus-staging azd environment
+        run: azd env select nimbus-staging || azd env new nimbus-staging --no-prompt --location "$AZURE_LOCATION" --subscription "$AZURE_SUBSCRIPTION_ID"
+      - name: Set staging sizing (Basic Search -- Free tier is reserved for dev, one per subscription)
+        run: |
+          azd env set SEARCH_SKU basic
+          azd env set OPENAI_CAPACITY 1
+          azd env set CONTENT_SAFETY_SKU S0
+          azd env set CONTAINER_APP_MIN_REPLICAS 0
+      - name: azd provision (idempotent -- only changes what drifted)
+        run: azd provision --no-prompt
+      - name: azd deploy (build image, push to ACR, create new revision -- 0% traffic until canary-verified below)
+        run: azd deploy --no-prompt
+      - name: Canary rollout with automated rollback
+        run: |
+          python -m pip install --quiet --break-system-packages -r requirements.txt
+          RESOURCE_GROUP=$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2- | tr -d '"')
+          APP_NAME=$(azd env get-values | grep -m1 '^AZURE_CONTAINER_APP_API_NAME' | cut -d'=' -f2- | tr -d '"')
+          bash scripts/canary_deploy.sh "$RESOURCE_GROUP" "$APP_NAME"
+
+  deploy-production:
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production   # GitHub Environment with required reviewers = human-approval gate
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-azd@v2
+      - name: Log in with azd (federated / OIDC, no secrets on disk)
+        run: |
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --federated-credential-provider "github" \
+            --tenant-id "$AZURE_TENANT_ID"
+      - name: Log in with az CLI too (same OIDC federated credential -- scripts/canary_deploy.sh needs `az containerapp` commands azd itself doesn't expose)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Select or create the nimbus-production azd environment
+        run: azd env select nimbus-production || azd env new nimbus-production --no-prompt --location "$AZURE_LOCATION" --subscription "$AZURE_SUBSCRIPTION_ID"
+      - name: Set production sizing (presentation-grade -- see ADR 0001; not sized for real customer traffic)
+        run: |
+          azd env set SEARCH_SKU basic
+          azd env set OPENAI_CAPACITY 3
+          azd env set CONTENT_SAFETY_SKU S0
+          azd env set CONTAINER_APP_MIN_REPLICAS 1
+      - name: azd provision (idempotent -- only changes what drifted)
+        run: azd provision --no-prompt
+      - name: azd deploy (build image, push to ACR, create new revision -- 0% traffic until canary-verified below)
+        run: azd deploy --no-prompt
+      - name: Canary rollout with automated rollback (production -- smaller initial slice, longer soak than dev/staging)
+        run: |
+          python -m pip install --quiet --break-system-packages -r requirements.txt
+          RESOURCE_GROUP=$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2- | tr -d '"')
+          APP_NAME=$(azd env get-values | grep -m1 '^AZURE_CONTAINER_APP_API_NAME' | cut -d'=' -f2- | tr -d '"')
+          bash scripts/canary_deploy.sh "$RESOURCE_GROUP" "$APP_NAME" 10 90

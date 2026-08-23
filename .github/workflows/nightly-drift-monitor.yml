@@ -1,0 +1,98 @@
+name: Nightly Drift Monitor
+
+# Phase C addition -- docs/adr/0004-llmops-agentops-rigor.md. Runs the
+# SAME real-cloud evaluation suite ai-release.yml's `cloud-eval` job
+# runs on every PR, but on a schedule, against the persistent shared eval
+# environment (see README.md "CI/CD and cloud credentials" for how that
+# environment is stood up -- same EVAL_* secrets/variables, reused here).
+#
+# The point: catch drift that no PR would ever surface -- model behavior
+# changing upstream, the Search index going stale with no code change
+# (eval/check_index_freshness.py), or a regression that crept in on a day
+# with no commits at all. A red run here means "something about the
+# deployed system's real-world behavior changed," not "a PR broke
+# something," which is exactly the gap a PR-only eval gate can't cover.
+#
+# On a non-promote decision, opens/updates a single tracking GitHub
+# issue (deduplicated by title) rather than failing a build nobody would
+# see -- there's no PR to fail against on a schedule.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # once daily; offset off the hour deliberately, not a hard requirement
+  workflow_dispatch: {}      # manual trigger for on-demand drift checks
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+jobs:
+  nightly-eval:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_OPENAI_ENDPOINT: ${{ vars.EVAL_AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_DEPLOYMENT: ${{ vars.EVAL_AZURE_OPENAI_DEPLOYMENT }}
+      AZURE_SEARCH_ENDPOINT: ${{ vars.EVAL_AZURE_SEARCH_ENDPOINT }}
+      AZURE_CONTENT_SAFETY_ENDPOINT: ${{ vars.EVAL_AZURE_CONTENT_SAFETY_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt --break-system-packages
+      - name: Azure login (OIDC, shared eval environment)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.EVAL_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.EVAL_AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.EVAL_AZURE_SUBSCRIPTION_ID }}
+      - name: Full LLM eval (real model calls)
+        run: python -m eval.run_llm_eval --dataset eval/datasets/rag_eval.jsonl --out eval/results/llm_eval.json
+      - name: Agent trajectory eval (real Manager+Specialist calls, real tool calls)
+        run: python -m eval.run_agent_trajectory_eval --dataset eval/datasets/tool_trajectory_eval.jsonl --out eval/results/agent_eval.json
+      - name: Safety regression (real Content Safety calls)
+        run: python -m eval.run_safety_regression --dataset eval/datasets/safety_regression.jsonl --dataset eval/datasets/prompt_injection.jsonl --out eval/results/safety_eval.json
+      - name: LLM-as-judge eval (informational)
+        continue-on-error: true
+        run: python -m eval.run_llm_judge_eval --dataset eval/datasets/rag_eval.jsonl --out eval/results/llm_judge_eval.json
+      - name: Index freshness check
+        id: freshness
+        continue-on-error: true
+        run: python -m eval.check_index_freshness
+      - name: Evaluate against release-policy.yaml
+        id: decide
+        continue-on-error: true
+        run: python -m eval.apply_release_policy --policy release-policy.yaml --results eval/results/llm_eval.json eval/results/agent_eval.json eval/results/safety_eval.json --out eval/results/decision.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-drift-results-${{ github.run_id }}
+          path: eval/results/
+      - name: Open/update a tracking issue if drift was detected
+        if: steps.decide.outcome == 'failure' || steps.freshness.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const decision = fs.existsSync('eval/results/decision.json')
+              ? JSON.parse(fs.readFileSync('eval/results/decision.json', 'utf8'))
+              : { decision: 'unknown', breaches: [] };
+            const title = 'Nightly drift monitor: regression detected';
+            const body = [
+              `Run: ${context.runId} on ${new Date().toISOString().slice(0, 10)}`,
+              `Decision: **${decision.decision}**`,
+              '',
+              decision.breaches && decision.breaches.length
+                ? decision.breaches.map(b => `- \`${b.metric}\`: ${b.value} (bound: ${b.bound_type} ${b.bound}, on_breach: ${b.on_breach})`).join('\n')
+                : '- Index freshness check failed -- see the run logs and eval/check_index_freshness.py.',
+              '',
+              'No code changed to cause this -- see docs/adr/0004-llmops-agentops-rigor.md for why this workflow exists. Re-run manually (workflow_dispatch) after investigating.',
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'nightly-drift',
+            });
+            const open = existing.data.find(i => i.title === title);
+            if (open) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: open.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['nightly-drift'] });
+            }

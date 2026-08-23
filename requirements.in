@@ -1,0 +1,30 @@
+# requirements.in -- the human-edited SOURCE of dependency floors. Never
+# install directly from this file. `requirements.txt` is the pip-compile
+# generated, fully pinned lock file actually installed everywhere in this
+# repo (seed_lab.sh, Dockerfile, ai-release.yml, azure.yaml) -- regenerate
+# it after editing this file with:
+#   pip install pip-tools --break-system-packages
+#   pip-compile requirements.in -o requirements.txt
+# ai-release.yml's `deterministic-tests` job re-runs this and fails the
+# build if requirements.txt drifts from what this file would produce --
+# see roadmap Section 4.1, "Dependency pinning."
+
+pyyaml>=6.0
+pytest>=8.0
+ruff>=0.5
+pip-audit>=2.7
+fastapi>=0.110
+uvicorn>=0.29
+opentelemetry-api>=1.24.0
+azure-monitor-opentelemetry>=1.6.0
+
+# Real Azure clients -- REQUIRED, not optional. This rebuild has no
+# local/offline fallback for the model, retrieval, or content-safety
+# layers, so every one of these is needed to run the agent at all, not
+# just to unlock an "enrichment" track. See
+# Agent_End_to_End_Architecture.md Section 6.
+openai>=1.30.0                    # app/agent/azure_openai_client.py
+azure-search-documents>=11.4.0    # app/retrieval/retrieval.py, scripts/build_search_index.py
+azure-ai-contentsafety>=1.0.0     # app/agent/content_safety.py
+azure-identity>=1.16.0            # managed-identity auth, shared by all three clients above
+azure-data-tables>=12.5.0         # app/agent/audit_log.py -- persistent audit trail, see docs/adr/0004-llmops-agentops-rigor.md

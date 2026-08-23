@@ -1,0 +1,66 @@
+# azd manifest -- this file plus infra/main.bicep is the whole
+# "infrastructure" story for this project now. One command drives
+# everything:
+#
+#   azd up
+#
+# That single command: (1) provisions Microsoft Foundry, Azure AI Search,
+# Azure AI Content Safety, Container Apps (two of them -- `api` and the
+# LiteLLM `gateway` -- see docs/adr/0002-llm-gateway-and-observability.md),
+# ACR, Log Analytics, and Application Insights from infra/main.bicep;
+# (2) builds both Dockerfiles and pushes them to ACR; (3) deploys them to
+# their Container Apps; (4) runs the postprovision hook below, which
+# builds and populates the real Azure AI Search index. Nothing in this
+# project has a local/offline fallback, so there is no separate "local
+# setup" step to skip or forget.
+#
+# Tear everything down (deletes the resource group, no leftover spend):
+#   azd down --purge
+#
+# Wire up GitHub Actions to run this same flow on every push to main:
+#   azd pipeline config
+name: nimbus-support-copilot
+metadata:
+  template: nimbus-support-copilot@1.0.0
+
+services:
+  api:
+    project: .
+    language: python
+    host: containerapp
+    docker:
+      path: Dockerfile
+
+  gateway:
+    project: ./gateway
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+
+hooks:
+  # Runs once, automatically, after infra/main.bicep finishes provisioning
+  # and before the container image is deployed -- this is what makes
+  # `azd up` a single command instead of "run azd provision, then remember
+  # to also run this other script." AZURE_SEARCH_ENDPOINT and the other
+  # AZURE_* values below are injected into this hook's environment
+  # automatically by azd from infra/main.bicep's outputs -- nothing to
+  # export by hand.
+  postprovision:
+    posix:
+      shell: sh
+      run: |
+        set -e
+        echo "== Installing dependencies (postprovision) =="
+        pip install -r requirements.txt --break-system-packages --quiet
+        echo "== Building and seeding the real Azure AI Search index =="
+        python -m scripts.build_search_index
+      interactive: true
+      continueOnError: false
+    windows:
+      shell: pwsh
+      run: |
+        pip install -r requirements.txt --break-system-packages --quiet
+        python -m scripts.build_search_index
+      interactive: true
+      continueOnError: false

@@ -1,0 +1,98 @@
+%%{init: {'theme':'base', 'themeVariables': {
+  'background':'#0a1128',
+  'primaryColor':'#132347',
+  'primaryTextColor':'#eaf2ff',
+  'primaryBorderColor':'#33c7ff',
+  'lineColor':'#33c7ff',
+  'secondaryColor':'#1c2f5e',
+  'tertiaryColor':'#0a1128',
+  'fontFamily':'Segoe UI, Arial, sans-serif',
+  'fontSize':'15px'
+}}}%%
+flowchart TB
+    subgraph CLIENT["🖥️ CHANNEL LAYER"]
+        UI["Support Web / Chat UI<br/>Azure Static Web Apps"]
+    end
+
+    subgraph IDENTITY["🔐 IDENTITY — Microsoft Entra ID"]
+        AUTH["Customer Auth<br/>Entra External ID"]
+        MI["Workload / Managed Identities<br/>per environment"]
+    end
+
+    subgraph AGENT["🤖 AGENT / ORCHESTRATION — Microsoft Foundry Agent Service"]
+        ORCH["Agent Runtime<br/>tool router · policy · memory/state<br/>max-step + trajectory control"]
+    end
+
+    subgraph GATEWAY["🔀 LLM GATEWAY — LiteLLM Proxy (MIT)"]
+        GW["Gateway Container App<br/>routes · master-key auth · trace hook"]
+    end
+
+    subgraph MODEL["🧠 FOUNDATION MODEL — Microsoft Foundry Models"]
+        LLM["Azure OpenAI / Foundry Model Endpoint<br/>versioned deployment"]
+    end
+
+    subgraph RETRIEVAL["📚 RETRIEVAL & KNOWLEDGE LAYER"]
+        IDX["Azure AI Search<br/>vector + hybrid index"]
+        DOCS["Policy / Knowledge Docs<br/>Blob Storage + ingestion pipeline"]
+    end
+
+    subgraph TOOLS["🛠️ TOOL LAYER"]
+        RO["Read-only Tools<br/>get_customer_plan · check_network_outage · retrieve_latest_bill"]
+        WR["Controlled Write Tools<br/>create_support_ticket · request_customer_credit"]
+    end
+
+    subgraph APPROVAL["✅ HUMAN-APPROVAL GATEWAY"]
+        HAG["Approval Queue<br/>Azure Functions + Logic Apps"]
+    end
+
+    subgraph GUARDRAIL["🛡️ SAFETY GUARDRAILS"]
+        CS["Azure AI Content Safety<br/>Prompt Shields · Groundedness Detection"]
+    end
+
+    subgraph OBS["📈 EVALUATION · TRACING · MONITORING"]
+        EVAL["Foundry Evaluation<br/>offline + online eval"]
+        TRACE["Application Insights / Azure Monitor<br/>GenAI trace spans"]
+        LF["Langfuse Cloud (free tier)<br/>per-call LLM trace detail"]
+        LOGS["Log Analytics Workspace<br/>audit + governance evidence"]
+    end
+
+    subgraph PLATFORM["⚙️ PLATFORM & SUPPLY CHAIN"]
+        ACA["Azure Container Apps<br/>app runtime"]
+        ACR["Azure Container Registry<br/>immutable image"]
+        KV["Azure Key Vault<br/>secrets"]
+        POL["Azure Policy + Defender for Cloud<br/>governance guardrails"]
+        GHA["GitHub Actions<br/>OIDC via Entra ID"]
+    end
+
+    UI -->|1. user request| AUTH
+    AUTH --> ORCH
+    ORCH -->|2. retrieval query| IDX
+    IDX --> DOCS
+    ORCH -->|3. prompt + context| GW
+    GW -->|3b. real model call| LLM
+    GW -.->|trace every call| LF
+    KV -.-> GW
+    ORCH -->|4. tool call| RO
+    ORCH -->|4. tool call| WR
+    WR -->|5. monetary/sensitive| HAG
+    UI -.->|input/output filter| CS
+    ORCH -.->|policy check| CS
+    ORCH --> EVAL
+    ORCH --> TRACE
+    HAG --> LOGS
+    TRACE --> LOGS
+    EVAL --> LOGS
+    GHA -->|build once| ACR
+    ACR --> ACA
+    ACA --> ORCH
+    MI -.-> ACA
+    MI -.-> GHA
+    KV -.-> ACA
+    POL -.-> ACA
+    POL -.-> ACR
+
+    classDef box fill:#132347,stroke:#33c7ff,stroke-width:1.5px,color:#eaf2ff;
+    classDef accent fill:#1c2f5e,stroke:#a68bff,stroke-width:1.5px,color:#eaf2ff;
+    classDef safety fill:#1c2f5e,stroke:#ff5c5c,stroke-width:1.5px,color:#eaf2ff;
+    class UI,AUTH,MI,ORCH,GW,LLM,IDX,DOCS,RO,WR,HAG,EVAL,TRACE,LF,LOGS,ACA,ACR,KV,POL,GHA box;
+    class CS safety;
