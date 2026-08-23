@@ -54,8 +54,8 @@ You need, once, on your own machine or a training VM:
 
 You also need Azure OpenAI access enabled on your subscription (a
 one-time approval Microsoft requires per subscription, separate from
-resource creation) and available `gpt-4o-mini` capacity in your target
-region. If you've never deployed Azure OpenAI on this subscription
+resource creation) and available `gpt-5-mini` capacity for your target
+Foundry account's region. If you've never deployed Azure OpenAI on this subscription
 before, request access at https://aka.ms/oai/access first — this can
 take anywhere from minutes to a day or two to approve, so do it as early
 as possible, well before the evening-before-class window.
@@ -161,9 +161,15 @@ azd up
 
 You'll be prompted for:
 - **Azure Subscription** — pick the one with Azure OpenAI access approved.
-- **Azure location** — pick a region with `gpt-4o-mini` capacity. As of
-  this writing, `eastus2`, `swedencentral`, and `westus3` reliably have
-  it; verify current availability for your subscription with:
+- **Azure location** — pick a region with `gpt-5-mini` capacity.
+  **The region list below was verified for the now-retired `gpt-4o-mini`
+  and has not been re-verified for `gpt-5-mini` or its GlobalStandard SKU
+  (which routes inference globally but still needs the Foundry account
+  itself provisioned somewhere) — treat it as a starting point, not a
+  guarantee, and confirm in the Foundry portal or with the command below
+  before relying on it.** As of the old check, `eastus2`,
+  `swedencentral`, and `westus3` reliably had `gpt-4o-mini` capacity;
+  verify current availability for your subscription with:
   ```bash
   az cognitiveservices account list-skus --kind OpenAI --location <region> \
     --query "[?name=='S0']" -o table
@@ -178,7 +184,7 @@ further prompts:
    `infra/resources.bicep`: creates the resource group, Log Analytics
    workspace, Application Insights, Azure Container Registry, Container
    Apps environment, a user-assigned managed identity, a Microsoft
-   Foundry account + project + `gpt-4o-mini` deployment (one shared
+   Foundry account + project + `gpt-5-mini` deployment (one shared
    deployment serves the Manager, BillingAgent, and AccountAgent — see
    `docs/adr/0001-foundry-and-multiagent.md`), the Azure AI Search
    service, the Azure AI Content Safety account, the LiteLLM Proxy
@@ -595,7 +601,8 @@ replicas) even though the code and image are identical across all three.
 |---|---|---|
 | `RuntimeError: LLM_GATEWAY_ENDPOINT is not set` | You opened a new terminal and didn't reload the environment | Re-run Part 0.7's `source <(azd env get-values)` in this terminal |
 | `RuntimeError: LLM_GATEWAY_API_KEY is not set` | Same as above, but for the one value Key Vault holds instead of `.env` | Re-run Part 0.7's `az keyvault secret show ...` export in this terminal |
-| `azd up` fails at the OpenAI resource with a quota/capacity error | No `gpt-4o-mini` capacity in your chosen region | Pick a different region: `azd env set AZURE_LOCATION <region>` then `azd up` again — it's idempotent, already-created resources are left alone |
+| `azd up` fails at the OpenAI resource with a quota/capacity error | No `gpt-5-mini` capacity in your chosen region | Pick a different region: `azd env set AZURE_LOCATION <region>` then `azd up` again — it's idempotent, already-created resources are left alone |
+| `azd up` fails with `InvalidResourceProperties: The specified SKU 'Standard' ... is not supported by the model` | `gpt-5-mini` only offers GlobalStandard/DataZoneStandard, never plain regional Standard | This is already fixed in `infra/resources.bicep`'s `chatDeployment` — if you see this, you're on an older copy of the template; pull the current one |
 | `azd up` fails with a role-assignment permission error | Your account has Contributor but not User Access Administrator | Ask your Azure admin to grant it, or have them run `azd provision` once on your behalf |
 | `azd deploy` fails to build the Docker image | Docker daemon not running locally | Start Docker Desktop / `sudo systemctl start docker`, or switch `docker.remoteBuild: true` under `services.api` in `azure.yaml` to build in ACR instead of locally |
 | `python scripts/verify_deployment.py` fails the RAG-grounding check | The Search index wasn't seeded | Re-run the postprovision hook manually: `python -m scripts.build_search_index` |
