@@ -149,10 +149,19 @@ jobs:
     needs: [deterministic-tests, code-scanning]
     runs-on: ubuntu-latest
     env:
-      AZURE_OPENAI_ENDPOINT: ${{ vars.EVAL_AZURE_OPENAI_ENDPOINT }}
+      # AZURE_OPENAI_DEPLOYMENT is the model alias app/agent/azure_openai_client.py's
+      # get_deployment_name() reads. There is no AZURE_OPENAI_ENDPOINT here on
+      # purpose -- nothing in this codebase ever reads that name; every eval
+      # script below runs the real agent (app.agent.agent.run_turn), which talks
+      # to Foundry through the LiteLLM gateway, never directly
+      # (docs/adr/0002-llm-gateway-and-observability.md). The two vars that
+      # actually matter for that call are LLM_GATEWAY_ENDPOINT and
+      # LLM_GATEWAY_API_KEY below -- without them, every eval step here fails
+      # immediately with "RuntimeError: LLM_GATEWAY_ENDPOINT is not set."
       AZURE_OPENAI_DEPLOYMENT: ${{ vars.EVAL_AZURE_OPENAI_DEPLOYMENT }}
       AZURE_SEARCH_ENDPOINT: ${{ vars.EVAL_AZURE_SEARCH_ENDPOINT }}
       AZURE_CONTENT_SAFETY_ENDPOINT: ${{ vars.EVAL_AZURE_CONTENT_SAFETY_ENDPOINT }}
+      LLM_GATEWAY_ENDPOINT: ${{ vars.EVAL_LLM_GATEWAY_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -164,6 +173,17 @@ jobs:
           client-id: ${{ secrets.EVAL_AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.EVAL_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.EVAL_AZURE_SUBSCRIPTION_ID }}
+      - name: Fetch the LiteLLM gateway key (a Key Vault secret, not an azd
+          output -- same lookup Day1_Lab_Guide.md Part 0.7 has trainees do
+          locally, just against the shared nimbus-eval vault instead of
+          their own sandbox's)
+        run: |
+          KEY=$(az keyvault secret show \
+            --vault-name "${{ vars.EVAL_AZURE_KEY_VAULT_NAME }}" \
+            --name litellm-master-key \
+            --query value -o tsv)
+          echo "::add-mask::$KEY"
+          echo "LLM_GATEWAY_API_KEY=$KEY" >> "$GITHUB_ENV"
       - name: Retrieval smoke test against the real index
         run: python -m eval.run_retrieval_smoke --dataset eval/datasets/rag_eval.jsonl
       - name: Full LLM eval (real model calls)

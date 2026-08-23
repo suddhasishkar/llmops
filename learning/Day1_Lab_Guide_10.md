@@ -38,13 +38,29 @@ Part 0 has two tracks with two different owners, and they run in
 | Track | Who | Steps | When |
 |---|---|---|---|
 | **A — Your own sandbox** | Every trainee, individually | 0.1 → 0.8 below | Evening before, or first thing before class |
-| **B — Shared CI/CD** | Instructor/admin, once for the whole class | 0.9 below | Any time before Part 4.3 runs in class — does **not** block Track A and doesn't need to happen first or last relative to it |
+| **B — Shared CI/CD** | Instructor/admin, once for the whole class, **and entirely optional** | 0.9 below | Any time before Part 4.3 runs in class — does **not** block Track A and doesn't need to happen first or last relative to it |
 
 If you're a trainee: do 0.1–0.8 below, stop at the line that says **"Stop
 here,"** and go read Part 1. You do not need 0.9 and should not run it —
 running `azd pipeline config` against the shared class repo more than
 once from different accounts is exactly the kind of thing one admin
 should own, not the whole room.
+
+**Track B costs real money to turn on, and Day 1 does not require it.**
+Every deliverable Part 5 asks for — both `decision.json` files, the
+prompt diff, the one-sentence explanation — comes out of Track A alone,
+run entirely on your own machine. Track B's only payoff is Part 4.3,
+watching the same HOLD/PROMOTE decision happen automatically inside
+GitHub instead of in your terminal — a demonstration, not new content.
+The part of Track B that actually costs money, `cloud-eval`, is
+off by default in `.github/workflows/ai-release.yml` (gated behind a
+repo variable, `ENABLE_CLOUD_EVAL`, that starts unset) for exactly this
+reason — see 0.9's checklist and the "should we even turn this on"
+discussion right before it. If your class is optimizing for lowest
+cost, the admin can skip 0.9 entirely, or do 0.9.a/0.9.c (deploy
+credentials, GitHub Environments) without ever doing 0.9.b or flipping
+`ENABLE_CLOUD_EVAL` to `true` — everything simply shows as a skipped,
+not failed, check, and nobody is blocked from finishing the lab.
 
 If you're the instructor/admin: do 0.9 once, whenever is convenient
 before class starts — before, during, or after trainees work through
@@ -333,23 +349,44 @@ writes to, and it's easier to see what's yours versus what was
 automated if that goes first; (d) has to come last
 because it exercises everything (a)–(c) set up.
 
+**First, a decision, not a checklist item: do you even want `cloud-eval`
+turned on?** It's the one job in this whole file with a real, unavoidable
+per-run cost — real Azure OpenAI/Search/Content Safety calls — and it's
+**off by default**, gated behind a repo variable called
+`ENABLE_CLOUD_EVAL` that `ai-release.yml`'s header comment documents in
+full. Leave it unset and rows 4–5 below don't apply to you at all: skip
+0.9.b entirely, skip straight to row 6. Nothing in Part 5's required
+deliverables needs `cloud-eval` to have ever run — see the note at the
+top of this Part 0 section. Only work through rows 4–5 and flip the
+variable on if you specifically want Part 4.3's live demonstration.
+
 **Checklist — every one of these must be true before Part 4.3 will
-work.** Miss any single row and the failure surfaces inside a GitHub
-Actions log during class, which is a much worse place to debug it than
-here. Each row names which sub-step sets it and how to confirm it
-independently:
+work (rows 4–5 only if you decided above to turn `cloud-eval` on).**
+Miss any single row and the failure surfaces inside a GitHub Actions log
+during class, which is a much worse place to debug it than here. Each
+row names which sub-step sets it and how to confirm it independently:
 
 | # | Requirement | Set in | Confirm with |
 |---|---|---|---|
 | 1 | `gh` CLI installed and authenticated with `repo` + `workflow` scope | 0.9.a | `gh auth status` |
 | 2 | Deploy identity (app registration **or** user-assigned managed identity — pick one) + OIDC federated credential exists, subject scoped to this repo's `main` branch | 0.9.a (`azd pipeline config`) **or** 0.9.a′ (UAMI) | GitHub → **Settings → Secrets and variables → Actions** shows `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID` (Secrets tab) and `AZURE_LOCATION` (Variables tab) |
 | 3 | `AZURE_LOCATION` is a region with real `gpt-5-mini` capacity | 0.9.a | `az cognitiveservices account list-skus --kind OpenAI --location <region> --query "[?name=='S0']" -o table` — same check as Part 0.6 |
-| 4 | Shared `nimbus-eval` environment is provisioned and live | 0.9.b (`azd up`) | `azd env select nimbus-eval && azd env get-values` returns real, non-empty endpoint values |
-| 5 | A **separate** eval app registration + OIDC federated credential exists, subject `repo:<org>/<repo>:pull_request` — not the same credential as row 2 | 0.9.b | GitHub → **Settings → Secrets and variables → Actions** shows the four `EVAL_AZURE_*` secrets and four `EVAL_*` variables |
+| 4 *(optional — only if `cloud-eval` is on)* | Shared `nimbus-eval` environment is provisioned and live | 0.9.b (`azd up`) | `azd env select nimbus-eval && azd env get-values` returns real, non-empty endpoint values |
+| 5 *(optional — only if `cloud-eval` is on)* | A **separate** eval app registration + OIDC federated credential exists, subject `repo:<org>/<repo>:pull_request` — not the same credential as row 2 — **and** the repo variable `ENABLE_CLOUD_EVAL` is set to `true` | 0.9.b | GitHub → **Settings → Secrets and variables → Actions** shows the three `EVAL_AZURE_*` secrets, the five `EVAL_*` variables, and `ENABLE_CLOUD_EVAL = true` |
 | 6 | GitHub Environments `development`, `staging`, `production` exist, named exactly (case-sensitive, must match the workflow file's `environment:` keys) | 0.9.c | GitHub → **Settings → Environments** |
 | 7 | A required reviewer is added on **all three** environments, not just production | 0.9.c | Same screen, each environment's "Deployment protection rules" |
 | 8 | GitHub Actions is enabled on the repo at all | repo default, check once | GitHub → **Settings → Actions → General** → "Allow all actions and reusable workflows" |
 | 9 | The full pipeline has actually run once, end to end, successfully | 0.9.d | see below — this is the only row that isn't "did I configure X," it's "does it actually work" |
+
+If you left `ENABLE_CLOUD_EVAL` unset (rows 4–5 skipped): `cloud-eval`
+will show as **skipped**, not failed, on every PR — and because
+`release-gate` needs `cloud-eval` and every `deploy-*` job needs
+`release-gate`, those all cascade to skipped too, automatically, with no
+extra configuration required. That's GitHub Actions' documented default
+behavior (a job whose `needs` was skipped is itself skipped, not
+failed), not a workaround this guide is relying on informally. Rows 1–3
+and 6–8 still apply either way — the deploy side of CI/CD is independent
+of whether the paid evaluation side is switched on.
 
 #### 0.9.a — Deploy credentials, via `azd`
 
@@ -505,7 +542,12 @@ the `deploy-*` jobs only ever need Azure Resource Manager roles, not
 Graph permissions, but worth knowing if you reuse this identity for
 something else later.
 
-#### 0.9.b — Shared evaluation environment, by hand
+#### 0.9.b — Shared evaluation environment, by hand (skip entirely if you're leaving `cloud-eval` off)
+
+Do this section only if you decided, in the checklist above, that you
+want Part 4.3's live CI demonstration badly enough to pay for it. If
+not, skip straight to 0.9.c — there is nothing else in this subsection
+that any other part of the lab depends on.
 
 `cloud-eval` runs on every pull request against a **persistent shared
 eval environment** — deliberately not any of the three `nimbus-dev` /
@@ -518,12 +560,74 @@ azd env new nimbus-eval
 azd up
 ```
 
+**Now create the eval identity itself.** Unlike 0.9.a, there's no `azd
+pipeline config` command that does this for you — `cloud-eval` isn't a
+`deploy-*` job azd knows about, so this app registration, its federated
+credential, and its access grants are by-hand steps:
+
+```bash
+# 1. A separate app registration from 0.9.a's -- it needs a federated
+#    credential with a different subject (pull_request, not main), which
+#    means it has to be a different app registration; see the
+#    subject-matching explanation above.
+APP_ID=$(az ad app create --display-name nimbus-eval-cloudeval --query appId -o tsv)
+az ad sp create --id "$APP_ID"   # app registrations need a service principal before they can hold role assignments
+
+# 2. Federated credential trusting pull_request runs from this repo
+az ad app federated-credential create \
+  --id "$APP_ID" \
+  --parameters '{
+    "name": "github-pull-request",
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "repo:<org>/<repo>:pull_request",
+    "audiences": ["api://AzureADTokenExchange"]
+  }'
+
+# 3. Grant it exactly what the eval scripts call directly -- resource-group
+#    scope on nimbus-eval only, not subscription-wide like 0.9.a′'s deploy
+#    identity. This SP never touches Foundry directly (the model call goes
+#    through the LiteLLM gateway with its own key, step 4 below), so it
+#    only needs: read/analyze on Content Safety, read-only query on Search,
+#    and read on the one Key Vault secret that holds the gateway key.
+SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+azd env select nimbus-eval
+EVAL_RG=$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2- | tr -d '"')
+SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$EVAL_RG"
+
+az role assignment create --assignee "$SP_OBJECT_ID" --role "Cognitive Services User" --scope "$SCOPE"
+az role assignment create --assignee "$SP_OBJECT_ID" --role "Search Index Data Reader" --scope "$SCOPE"
+az role assignment create --assignee "$SP_OBJECT_ID" --role "Key Vault Secrets User" --scope "$SCOPE"
+
+# 4. The three values the workflow needs as EVAL_AZURE_CLIENT_ID etc.
+echo "EVAL_AZURE_CLIENT_ID: $APP_ID"
+echo "EVAL_AZURE_TENANT_ID: $(az account show --query tenantId -o tsv)"
+echo "EVAL_AZURE_SUBSCRIPTION_ID: $SUBSCRIPTION_ID"
+```
+
+These three roles are the same ones `infra/resources.bicep` grants the
+app's own managed identity for these exact operations (`cognitiveServicesUserRoleId`,
+`searchIndexDataReaderRoleId`, `keyVaultSecretsUserRoleId`) — this SP
+isn't getting any access the deployed app itself doesn't already have.
+
 Then in GitHub, **Settings → Secrets and variables → Actions**, add:
 
 | Add | Kind | Value |
 |---|---|---|
-| `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | A **separate** app registration from 0.9.a's, with its own OIDC federated credential whose subject is `repo:<org>/<repo>:pull_request` — per the subject-matching explanation above, 0.9.a's `main`-branch-scoped credential will not authenticate a `pull_request`-triggered run, so this cannot reuse that app registration |
-| `EVAL_AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from the `nimbus-eval` environment you just created |
+| `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | The three values step 4 above printed |
+| `EVAL_AZURE_OPENAI_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT`, `EVAL_LLM_GATEWAY_ENDPOINT`, `EVAL_AZURE_KEY_VAULT_NAME` | variable | `azd env get-values` from the `nimbus-eval` environment you just created — the matching keys are `AZURE_OPENAI_DEPLOYMENT`, `AZURE_SEARCH_ENDPOINT`, `AZURE_CONTENT_SAFETY_ENDPOINT`, `LLM_GATEWAY_ENDPOINT`, `AZURE_KEY_VAULT_NAME` |
+
+**Why there's no `EVAL_AZURE_OPENAI_ENDPOINT`:** it would be natural to
+assume the eval job needs Foundry's own endpoint, but nothing in this
+codebase ever reads that value — the agent talks to the LiteLLM gateway
+only, never straight to Foundry (`app/agent/azure_openai_client.py`).
+`EVAL_LLM_GATEWAY_ENDPOINT` and the gateway's key (fetched at run time
+from Key Vault in `ai-release.yml`, using `EVAL_AZURE_KEY_VAULT_NAME`)
+are what actually let `cloud-eval` make a real model call — leaving
+either of those two out is what makes `cloud-eval` fail on its first
+real run with `RuntimeError: LLM_GATEWAY_ENDPOINT is not set`, which is
+exactly the shape of bug that stays invisible while `ENABLE_CLOUD_EVAL`
+is off and only surfaces the moment you turn it on.
 
 **Why some of these are Secrets and others are Variables, specifically:**
 GitHub Actions Secrets are encrypted at rest, never displayed again once
@@ -541,6 +645,19 @@ faster to spot during class than clicking into a masked secret to guess
 what's in it. If you're ever unsure which kind a new value belongs in,
 default to Secret for anything that grants access and Variable for
 anything that's just describing where or how to connect.
+
+**Last step, and the one that actually turns spending on:** add one more
+Variable, `ENABLE_CLOUD_EVAL` = `true`. Everything above this point in
+0.9.b — the environment, the credentials — can exist without costing
+anything per PR; it's this flag, and only this flag, that makes
+`cloud-eval` actually start running (and billing) on every pull request
+against the repo. Setting the `EVAL_*` secrets and variables
+without also setting this one leaves `cloud-eval` correctly skipped, so
+if you want to stage this (stand up the environment now, turn on the
+spend later, right before the class session that uses it), that's a
+safe, supported way to do it — just don't forget the last step, or
+Part 4.3 will show every check skipped instead of the HOLD/PROMOTE it's
+supposed to demonstrate.
 
 #### 0.9.c — GitHub Environments, by hand
 
@@ -580,6 +697,11 @@ kind of Azure credential, and why): README.md "CI/CD and cloud
 credentials."
 
 #### 0.9.d — Verify the pipeline end-to-end (do this before class, not during it)
+
+Only relevant if you turned `ENABLE_CLOUD_EVAL` on in 0.9.b — if you left
+`cloud-eval` off on purpose, there's nothing to dry-run here: every job
+downstream of it will just show skipped, and that's the correct, expected
+result, not something to troubleshoot.
 
 0.9.a–0.9.c are all "did I configure this correctly" steps — none of
 them prove the pipeline actually runs. This step does, the same way
@@ -868,12 +990,25 @@ python -m eval.gate_or_fail --decision eval/results/decision.json
 
 Expected: `Release gate PASSED: decision = PROMOTE`, exit code `0`.
 
-### 4.3 — See it enforced in CI, not just locally
+### 4.3 — See it enforced in CI, not just locally (optional — skip if your class left `cloud-eval` off for cost reasons)
+
+This step only produces the result described below if an admin turned
+`ENABLE_CLOUD_EVAL` on (0.9.b) — see the note at the top of Part 0 for
+why that's off by default and not required for anything else in this
+guide. If you're not sure whether your class did, check the repo's
+**Settings → Secrets and variables → Actions → Variables** tab for
+`ENABLE_CLOUD_EVAL = true`, or just open a PR and see whether
+`cloud-eval` runs or shows skipped. Skipped is not a failure on your
+part — it means this step was left off deliberately, and Part 5's
+deliverables (already produced in Parts 2–4, entirely locally) don't
+need it.
 
 Push a branch that sets `PROMPT_VERSION: candidate_broken` in
 `.github/workflows/ai-release.yml`'s `env:` block and open a PR — the
 `deterministic-tests`, `code-scanning`, `cloud-eval`, and `release-gate`
-jobs all run on every PR. `code-scanning` is a clearly-labeled
+jobs all run on every PR (assuming `ENABLE_CLOUD_EVAL` is on — otherwise
+the latter two show as skipped, and everything below in this section
+describes what you'd see if it were on). `code-scanning` is a clearly-labeled
 **placeholder** stage (`scripts/mock_security_scan.py`) — it always
 reports a mock PASS and exists to show where a real SAST/secrets/CVE
 scanner (Semgrep/Gitleaks/Trivy/Checkov, or SonarQube) would plug in,

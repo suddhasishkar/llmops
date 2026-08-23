@@ -144,13 +144,36 @@ on.)
     azd env new nimbus-eval
     azd up
     ```
+    Create the eval identity (a separate app registration from step 13's
+    — full commands, including the three role grants it needs, are in
+    `Day1_Lab_Guide.md` 0.9.b; do not skip the role grants, `cloud-eval`
+    will fail without them even with a valid credential):
+    ```bash
+    APP_ID=$(az ad app create --display-name nimbus-eval-cloudeval --query appId -o tsv)
+    az ad sp create --id "$APP_ID"
+    az ad app federated-credential create --id "$APP_ID" --parameters '{
+      "name": "github-pull-request",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "subject": "repo:<org>/<repo>:pull_request",
+      "audiences": ["api://AzureADTokenExchange"]
+    }'
+    SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
+    SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2- | tr -d '"')"
+    az role assignment create --assignee "$SP_OBJECT_ID" --role "Cognitive Services User" --scope "$SCOPE"
+    az role assignment create --assignee "$SP_OBJECT_ID" --role "Search Index Data Reader" --scope "$SCOPE"
+    az role assignment create --assignee "$SP_OBJECT_ID" --role "Key Vault Secrets User" --scope "$SCOPE"
+    ```
     Then in GitHub, **Settings → Secrets and variables → Actions**, add:
 
     | Add | Kind | Value |
     |---|---|---|
-    | `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | A **separate** app registration from step 13's, with its own federated credential whose subject is `repo:<org>/<repo>:pull_request` |
-    | `EVAL_AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from `nimbus-eval` |
+    | `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | `$APP_ID`, your tenant ID, your subscription ID |
+    | `EVAL_AZURE_OPENAI_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT`, `EVAL_LLM_GATEWAY_ENDPOINT`, `EVAL_AZURE_KEY_VAULT_NAME` | variable | `azd env get-values` from `nimbus-eval` (`AZURE_OPENAI_DEPLOYMENT`, `AZURE_SEARCH_ENDPOINT`, `AZURE_CONTENT_SAFETY_ENDPOINT`, `LLM_GATEWAY_ENDPOINT`, `AZURE_KEY_VAULT_NAME`) |
     | `ENABLE_CLOUD_EVAL` | variable | `true` — this is the switch that actually turns `cloud-eval` on; everything above this row can exist without it costing anything per PR |
+
+    No `EVAL_AZURE_OPENAI_ENDPOINT` — the agent never calls Foundry
+    directly, only the LiteLLM gateway, so that value is never read by
+    anything.
 
 15. **GitHub Environments** — **Settings → Environments**, create
     `development`, `staging`, `production` (exact names, case-sensitive).

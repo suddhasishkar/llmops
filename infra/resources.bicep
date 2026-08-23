@@ -230,16 +230,26 @@ resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   tags: tags
   kind: 'AIServices'
   sku: { name: 'S0' }
-  // No identity block: nothing in this resource's own properties (no
-  // CMK/encryption, no outbound data-source reference) ever reads its
-  // own assigned identity -- every other identity reference in this
-  // file is the shared `identity` resource being GRANTED a role to
-  // call INTO this account (openAiRoleForApp, below), which needs no
-  // identity on foundryAccount itself. A copy-pasted `UserAssigned`
-  // block here was also the root cause of a preflight validation
-  // failure -- Cognitive Services accounts of kind 'AIServices' at
-  // this API version reject pure UserAssigned identity ("Supported
-  // identity types are: None,SystemAssigned").
+  // SystemAssigned identity is REQUIRED here, not optional, because
+  // allowProjectManagement: true below creates a child `projects`
+  // resource (foundryProject) -- Azure rejects that child-resource
+  // creation outright with "BadRequest: Unsupported configuration. To
+  // create projects, you must enable a managed identity on your
+  // resource" if the parent account has no identity at all. This
+  // account's own properties still never READ that identity (no CMK/
+  // encryption, no outbound data-source reference) -- every other
+  // identity reference in this file is the shared `identity` resource
+  // being GRANTED a role to call INTO this account (openAiRoleForApp,
+  // below) -- but Azure requires SOME identity to exist for project
+  // creation to succeed regardless of whether this template ever uses
+  // it directly. A `UserAssigned` block here was previously confirmed
+  // to be rejected outright -- Cognitive Services accounts of kind
+  // 'AIServices' at this API version only accept "None,SystemAssigned"
+  // -- so SystemAssigned is the only identity type that both satisfies
+  // the projects requirement above and passes that validation.
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     allowProjectManagement: true
     customSubDomainName: '${namePrefix}-foundry'

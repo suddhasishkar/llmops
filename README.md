@@ -176,8 +176,8 @@ deliberately kept separate:
 
   | Name | Kind | Value |
   |---|---|---|
-  | `EVAL_AZURE_CLIENT_ID` / `EVAL_AZURE_TENANT_ID` / `EVAL_AZURE_SUBSCRIPTION_ID` | secret | An app registration with OIDC federation trusting `repo:<org>/<repo>:pull_request` (same pattern as below, its own federated credential) |
-  | `EVAL_AZURE_OPENAI_ENDPOINT`, `EVAL_AZURE_OPENAI_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from that eval environment |
+  | `EVAL_AZURE_CLIENT_ID` / `EVAL_AZURE_TENANT_ID` / `EVAL_AZURE_SUBSCRIPTION_ID` | secret | An app registration with OIDC federation trusting `repo:<org>/<repo>:pull_request` (same pattern as below, its own federated credential; see `Day1_Lab_Guide.md` 0.9.b for the exact `az ad app create` / `az role assignment create` commands) |
+  | `EVAL_AZURE_OPENAI_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT`, `EVAL_LLM_GATEWAY_ENDPOINT`, `EVAL_AZURE_KEY_VAULT_NAME` | variable | `azd env get-values` from that eval environment (`AZURE_OPENAI_DEPLOYMENT`, `AZURE_SEARCH_ENDPOINT`, `AZURE_CONTENT_SAFETY_ENDPOINT`, `LLM_GATEWAY_ENDPOINT`, `AZURE_KEY_VAULT_NAME`) — no `EVAL_AZURE_OPENAI_ENDPOINT`, because nothing in this codebase ever reads that value; the agent talks to Foundry through the LiteLLM gateway only, never directly, so the gateway's own endpoint and key (fetched from Key Vault at run time) are what `cloud-eval` actually needs |
   | `ENABLE_CLOUD_EVAL` | variable | `true` — the last step, and the only one that actually turns spending on |
 
   There is no mocking of agent behavior anywhere in this pipeline when

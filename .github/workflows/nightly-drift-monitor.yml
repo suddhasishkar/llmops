@@ -31,10 +31,14 @@ jobs:
   nightly-eval:
     runs-on: ubuntu-latest
     env:
-      AZURE_OPENAI_ENDPOINT: ${{ vars.EVAL_AZURE_OPENAI_ENDPOINT }}
+      # Same reasoning as ai-release.yml's cloud-eval job: no
+      # AZURE_OPENAI_ENDPOINT, because nothing in this codebase reads it --
+      # the agent talks to Foundry through the LiteLLM gateway only. See
+      # ai-release.yml's cloud-eval env block comment for the full explanation.
       AZURE_OPENAI_DEPLOYMENT: ${{ vars.EVAL_AZURE_OPENAI_DEPLOYMENT }}
       AZURE_SEARCH_ENDPOINT: ${{ vars.EVAL_AZURE_SEARCH_ENDPOINT }}
       AZURE_CONTENT_SAFETY_ENDPOINT: ${{ vars.EVAL_AZURE_CONTENT_SAFETY_ENDPOINT }}
+      LLM_GATEWAY_ENDPOINT: ${{ vars.EVAL_LLM_GATEWAY_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,6 +50,14 @@ jobs:
           client-id: ${{ secrets.EVAL_AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.EVAL_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.EVAL_AZURE_SUBSCRIPTION_ID }}
+      - name: Fetch the LiteLLM gateway key (Key Vault secret, not an azd output)
+        run: |
+          KEY=$(az keyvault secret show \
+            --vault-name "${{ vars.EVAL_AZURE_KEY_VAULT_NAME }}" \
+            --name litellm-master-key \
+            --query value -o tsv)
+          echo "::add-mask::$KEY"
+          echo "LLM_GATEWAY_API_KEY=$KEY" >> "$GITHUB_ENV"
       - name: Full LLM eval (real model calls)
         run: python -m eval.run_llm_eval --dataset eval/datasets/rag_eval.jsonl --out eval/results/llm_eval.json
       - name: Agent trajectory eval (real Manager+Specialist calls, real tool calls)
