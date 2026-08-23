@@ -322,13 +322,15 @@ straight to Part 1, the timed, in-class, ~30-minute lab.
 ### 0.9 — Wire up CI/CD (instructor/admin, once for the whole class — trainees, skip to Part 1)
 
 This section has four parts, in this order: (a) run `azd pipeline
-config` for the deploy side, (b) stand up a separate shared evaluation
+config` for the deploy side — or its alternative, 0.9.a′, if you'd
+rather use a user-assigned managed identity than the app registration
+`azd` creates by default — (b) stand up a separate shared evaluation
 environment and wire its credentials in by hand, (c) create the GitHub
 Environments that gate production, (d) prove the whole thing actually
 works before anyone in the room depends on it. Do them in that order —
-(b) and (c) both add to the same repo settings screen `azd pipeline
-config` in (a) also writes to, and it's easier to see what's yours
-versus what `azd` generated if `azd` goes first; (d) has to come last
+(b) and (c) both add to the same repo settings screen (a) or (a′) also
+writes to, and it's easier to see what's yours versus what was
+automated if that goes first; (d) has to come last
 because it exercises everything (a)–(c) set up.
 
 **Checklist — every one of these must be true before Part 4.3 will
@@ -340,7 +342,7 @@ independently:
 | # | Requirement | Set in | Confirm with |
 |---|---|---|---|
 | 1 | `gh` CLI installed and authenticated with `repo` + `workflow` scope | 0.9.a | `gh auth status` |
-| 2 | Deploy app registration + OIDC federated credential exists, subject scoped to this repo's `main` branch | 0.9.a (`azd pipeline config`) | GitHub → **Settings → Secrets and variables → Actions** shows `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID` (Secrets tab) and `AZURE_LOCATION` (Variables tab) |
+| 2 | Deploy identity (app registration **or** user-assigned managed identity — pick one) + OIDC federated credential exists, subject scoped to this repo's `main` branch | 0.9.a (`azd pipeline config`) **or** 0.9.a′ (UAMI) | GitHub → **Settings → Secrets and variables → Actions** shows `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID` (Secrets tab) and `AZURE_LOCATION` (Variables tab) |
 | 3 | `AZURE_LOCATION` is a region with real `gpt-5-mini` capacity | 0.9.a | `az cognitiveservices account list-skus --kind OpenAI --location <region> --query "[?name=='S0']" -o table` — same check as Part 0.6 |
 | 4 | Shared `nimbus-eval` environment is provisioned and live | 0.9.b (`azd up`) | `azd env select nimbus-eval && azd env get-values` returns real, non-empty endpoint values |
 | 5 | A **separate** eval app registration + OIDC federated credential exists, subject `repo:<org>/<repo>:pull_request` — not the same credential as row 2 | 0.9.b | GitHub → **Settings → Secrets and variables → Actions** shows the four `EVAL_AZURE_*` secrets and four `EVAL_*` variables |
@@ -418,6 +420,90 @@ subject mismatch surfaces as an Azure login failure in the job logs
 job's cloud login step fails, check which trigger produced the run
 against which federated credential subject exists before assuming the
 credential value itself is wrong.
+
+##### 0.9.a′ — Alternative: a user-assigned managed identity instead of `azd`'s app registration
+
+`azd pipeline config` above always creates an **App Registration**
+(Service Principal) with the federated credential on it — that's not a
+security choice, it's just the only identity type its `--principal-id`/
+`--principal-name`/`--principal-role` flags know how to target. A
+**user-assigned managed identity (UAMI)** with its own federated
+credential is an equally valid, equally passwordless alternative — same
+OIDC trust mechanism, same "no secret ever stored in GitHub," just a
+different kind of Azure object holding the credential. Use this path
+instead of 0.9.a if either applies to you: your account can create
+resources (Contributor/Owner on a resource group) but can't create App
+Registrations in Entra ID (a separate, directory-level permission many
+orgs restrict more tightly), or you'd simply rather keep the CI identity
+as an ordinary Azure resource you can see and delete like anything else
+in a resource group, instead of a tenant-level Entra object. If you go
+this route, do it **instead of** running `azd pipeline config` in
+0.9.a, not in addition to it — pick one identity for the `deploy-*` jobs,
+not two.
+
+**Put this UAMI in its own small resource group that nothing else in
+this project touches** — e.g. `rg-nimbus-ci`, created just for it. This
+matters more than it looks: a UAMI is a resource that lives and dies
+with its resource group, unlike an App Registration, which is a
+tenant-level object independent of any resource group. If this identity
+lived inside, say, `rg-nimbus-dev`, then tearing that environment down
+(`azd down --purge` on `nimbus-dev`, or any cleanup pass) would silently
+delete the CI pipeline's own credential along with it, and the next
+merge to `main` would fail with no obvious connection to whatever got
+cleaned up. A dedicated, untouched resource group avoids that entirely.
+
+```bash
+# 1. A resource group dedicated to the CI identity, nothing else
+az group create --name rg-nimbus-ci --location <region>
+
+# 2. The identity itself
+az identity create \
+  --name nimbus-ci-deploy \
+  --resource-group rg-nimbus-ci \
+  --location <region>
+
+# 3. Federated credential trusting this repo's main branch — same subject
+#    azd pipeline config would have used in 0.9.a
+az identity federated-credential create \
+  --name github-main \
+  --identity-name nimbus-ci-deploy \
+  --resource-group rg-nimbus-ci \
+  --issuer 'https://token.actions.githubusercontent.com' \
+  --subject 'repo:<org>/<repo>:ref:refs/heads/main' \
+  --audiences 'api://AzureADTokenExchange'
+
+# 4. Grant it the same roles azd pipeline config grants its app registration
+#    by default (Contributor to provision/deploy, User Access Administrator
+#    because infra/main.bicep creates role assignments of its own)
+UAMI_PRINCIPAL_ID=$(az identity show --name nimbus-ci-deploy --resource-group rg-nimbus-ci --query principalId -o tsv)
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+az role assignment create --assignee "$UAMI_PRINCIPAL_ID" --role Contributor --scope "/subscriptions/$SUBSCRIPTION_ID"
+az role assignment create --assignee "$UAMI_PRINCIPAL_ID" --role "User Access Administrator" --scope "/subscriptions/$SUBSCRIPTION_ID"
+
+# 5. The value the deploy-* jobs need as AZURE_CLIENT_ID is the identity's
+#    CLIENT id, not its principal/object id — they are different values
+az identity show --name nimbus-ci-deploy --resource-group rg-nimbus-ci --query clientId -o tsv
+```
+
+Then set the same four values 0.9.a's table describes — `AZURE_CLIENT_ID`
+(the `clientId` from step 5, not `principalId`), `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID` as **secrets**, and `AZURE_LOCATION` as a
+**variable** — by hand in GitHub (**Settings → Secrets and variables →
+Actions**), since there's no `azd pipeline config` step doing it for
+you on this path. `azd auth login --client-id ... --federated-credential-provider
+"github" --tenant-id ...` (what every `deploy-*` job already runs, per
+`ai-release.yml`) accepts a UAMI's client ID exactly the same way it
+accepts an App Registration's — nothing in the workflow file needs to
+change either way.
+
+Two limits worth knowing before you rely on this: a single identity
+(App Registration or UAMI) can hold at most 20 federated credentials, so
+there's plenty of room if you later add more subjects; and unlike an App
+Registration, a UAMI cannot itself be granted admin-consent-requiring
+API permissions (Microsoft Graph, etc.) — irrelevant to this lab, since
+the `deploy-*` jobs only ever need Azure Resource Manager roles, not
+Graph permissions, but worth knowing if you reuse this identity for
+something else later.
 
 #### 0.9.b — Shared evaluation environment, by hand
 
