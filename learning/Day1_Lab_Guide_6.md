@@ -32,13 +32,37 @@ stage — see Part 4.3.
 
 ## Part 0 — One-time cloud setup (do this BEFORE Day 1 starts)
 
-Do this the evening before, or first thing before the training session
-begins. It is entirely automated — one command does the provisioning,
-building, and deploying — but Azure resource creation and RBAC
-propagation genuinely take 15–20 minutes of wall-clock time that would
-eat most of an in-class lab if you started it live. Everything in "Part
-1" onward assumes this is already done and takes the ~30 minutes it
-promises.
+Part 0 has two tracks with two different owners, and they run in
+**parallel**, not in sequence — nobody should be waiting on anybody else:
+
+| Track | Who | Steps | When |
+|---|---|---|---|
+| **A — Your own sandbox** | Every trainee, individually | 0.1 → 0.8 below | Evening before, or first thing before class |
+| **B — Shared CI/CD** | Instructor/admin, once for the whole class | 0.9 below | Any time before Part 4.3 runs in class — does **not** block Track A and doesn't need to happen first or last relative to it |
+
+If you're a trainee: do 0.1–0.8 below, stop at the line that says **"Stop
+here,"** and go read Part 1. You do not need 0.9 and should not run it —
+running `azd pipeline config` against the shared class repo more than
+once from different accounts is exactly the kind of thing one admin
+should own, not the whole room.
+
+If you're the instructor/admin: do 0.9 once, whenever is convenient
+before class starts — before, during, or after trainees work through
+their own 0.1–0.8, it makes no difference, since 0.9 wires up the
+*shared* repo's CI/CD and a *separate* shared evaluation environment,
+neither of which any trainee's individual `nimbus-lab[-initials]`
+sandbox from Track A depends on. The only hard deadline is: it must be
+done before anyone in the room reaches Part 4.3 ("See it enforced in
+CI"), since that's the first point in the lab that actually exercises
+the pipeline 0.9 sets up.
+
+Do Track A the evening before, or first thing before the training
+session begins. It is entirely automated — one command does the
+provisioning, building, and deploying — but Azure resource creation and
+RBAC propagation genuinely take 15–20 minutes of wall-clock time that
+would eat most of an in-class lab if you started it live. Everything in
+"Part 1" onward assumes both tracks are already done and takes the ~30
+minutes it promises.
 
 ### 0.1 — Prerequisites
 
@@ -268,28 +292,162 @@ here means the entire cloud stack is correctly wired, not just that
 resources exist. See "Troubleshooting" at the end of this guide if
 anything fails.
 
-**Stop here.** Part 0 is complete. Everything below is the timed,
-in-class, ~30-minute lab.
+**Stop here if you're a trainee.** Track A (your own sandbox) is
+complete. Everything below in 0.9 is the admin-only Track B — skip
+straight to Part 1, the timed, in-class, ~30-minute lab.
 
-### 0.9 — Wire up CI/CD (instructor/admin, once for the whole class — skip if you're a trainee)
+### 0.9 — Wire up CI/CD (instructor/admin, once for the whole class — trainees, skip to Part 1)
+
+This section has three parts, in this order: (a) run `azd pipeline
+config` for the deploy side, (b) stand up a separate shared evaluation
+environment and wire its credentials in by hand, (c) create the GitHub
+Environments that gate production. Do them in that order — (b) and (c)
+both add to the same repo settings screen `azd pipeline config` in (a)
+also writes to, and it's easier to see what's yours versus what `azd`
+generated if `azd` goes first.
+
+#### 0.9.a — Deploy credentials, via `azd`
+
+`azd pipeline config` needs a local azd **environment** to read
+subscription/location/name from — it does not need `azd up` to have
+actually finished, or even to have been run at all. If you already have
+one selected (for instance because you, the admin, also did Track A's
+0.1–0.8 for your own sandbox), you can run the command as-is from that
+same checkout and it'll use whichever environment `azd env list` shows
+as current. If not, create a throwaway one first — it doesn't provision
+anything by itself:
 
 ```bash
+azd env new nimbus-pipeline-admin
 azd pipeline config
 ```
 
-Sets `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID`/`AZURE_LOCATION`
-for the three `deploy-*` jobs automatically. Then add these by hand in
-GitHub (**Settings → Secrets and variables → Actions**):
+This creates an Azure app registration, an OIDC federated credential on
+it, and the repo secrets/variables the three `deploy-*` jobs read
+(`AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID`/`AZURE_LOCATION`)
+— all automatically, no values to copy by hand. It does **not** provision
+or deploy `nimbus-dev`/`nimbus-staging`/`nimbus-production` themselves —
+look at `.github/workflows/ai-release.yml`'s `deploy-*` jobs and you'll
+see each one runs its own `azd env new`/`azd env select` +
+`azd provision` + `azd deploy` inside CI, the first time that job runs.
+So there is nothing to `azd up` locally for those three environments at
+all; `nimbus-pipeline-admin` above (or your own Track A environment, if
+you reused it) is disposable once this command succeeds — its only job
+was giving `azd pipeline config` a subscription and location to point
+the new app registration at.
+
+Under the hood this shells out to the GitHub CLI (`gh`) to write those
+repo secrets/variables, so it needs `gh` installed and authenticated
+against the repo you're configuring, with enough scope to manage Actions
+secrets. If it fails partway with something like `gh: To use GitHub CLI
+in this environment, run gh auth login` or a 403/404 while it's writing
+secrets, that's this, not an Azure problem:
+
+```bash
+gh auth status                                   # confirms whether gh even sees a login
+gh auth login --hostname github.com --git-protocol https --scopes repo,workflow
+# already logged in but missing scope? refresh instead of re-logging-in:
+gh auth refresh -h github.com -s repo,workflow
+```
+
+Then re-run `azd pipeline config` — it's safe to run again; it updates
+the app registration and secrets/variables it already created rather
+than duplicating them.
+
+**A federated credential is scoped to a specific GitHub Actions trigger
+context, not to the repo in general** — this matters for 0.9.b below, so
+it's worth understanding here first. Every OIDC token GitHub Actions
+mints carries a `sub` (subject) claim describing exactly what produced
+it — for example `repo:<org>/<repo>:ref:refs/heads/main` for a push to
+`main`, or `repo:<org>/<repo>:pull_request` for any pull-request-triggered
+run, or `repo:<org>/<repo>:environment:production` for a job that
+targets the `production` GitHub Environment. Azure only accepts the
+token if some federated credential on the app registration has a
+`subject` field matching that claim *exactly* — no wildcards, no partial
+match. `azd pipeline config` creates a federated credential whose subject
+matches this repo's `main` branch, because the three `deploy-*` jobs run
+`on: push: branches: [main]`. That credential does **not** match a
+pull-request run's `sub` claim, which is exactly why `cloud-eval` (which
+runs `on: pull_request`) needs its own app registration with its own,
+differently-scoped federated credential — see 0.9.b. A token/credential
+subject mismatch surfaces as an Azure login failure in the job logs
+(look for `AADSTS70021` or similar), not as a GitHub-side error, so if a
+job's cloud login step fails, check which trigger produced the run
+against which federated credential subject exists before assuming the
+credential value itself is wrong.
+
+#### 0.9.b — Shared evaluation environment, by hand
+
+`cloud-eval` runs on every pull request against a **persistent shared
+eval environment** — deliberately not any of the three `nimbus-dev` /
+`nimbus-staging` / `nimbus-production` environments 0.9.a's credentials
+deploy to, so that a PR under review can never call an environment
+that's also serving deployed traffic. Stand it up once:
+
+```bash
+azd env new nimbus-eval
+azd up
+```
+
+Then in GitHub, **Settings → Secrets and variables → Actions**, add:
 
 | Add | Kind | Value |
 |---|---|---|
-| `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | app registration for a one-time `azd env new nimbus-eval && azd up`, OIDC trusting `repo:<org>/<repo>:pull_request` |
-| `EVAL_AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from that `nimbus-eval` environment |
+| `EVAL_AZURE_CLIENT_ID` / `_TENANT_ID` / `_SUBSCRIPTION_ID` | secret | A **separate** app registration from 0.9.a's, with its own OIDC federated credential whose subject is `repo:<org>/<repo>:pull_request` — per the subject-matching explanation above, 0.9.a's `main`-branch-scoped credential will not authenticate a `pull_request`-triggered run, so this cannot reuse that app registration |
+| `EVAL_AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from the `nimbus-eval` environment you just created |
 
-Then **Settings → Environments**: create `development`, `staging`,
-`production` (names must match exactly), and add a **required reviewer**
-on `production` only. Optional: **Settings → Branches**, protect `main`,
-require the four PR checks. Full explanation: README.md "CI/CD and cloud
+**Why some of these are Secrets and others are Variables, specifically:**
+GitHub Actions Secrets are encrypted at rest, never displayed again once
+saved (even to you), and automatically masked (`***`) if they ever show
+up in a job log. Variables are stored and displayed as plain text in the
+repo settings UI and in logs. The client/tenant/subscription IDs go in
+as Secrets because they identify a credential that can authenticate as
+this app registration — worth masking even though an ID alone isn't a
+usable secret by itself, same caution as the `AZURE_CLIENT_ID` etc. pair
+`azd pipeline config` wrote in 0.9.a. The endpoint URLs and deployment
+name go in as Variables because they're just configuration — knowing an
+endpoint URL grants nobody access to anything, and having them render in
+plain text in the Actions UI makes a misconfigured-endpoint failure much
+faster to spot during class than clicking into a masked secret to guess
+what's in it. If you're ever unsure which kind a new value belongs in,
+default to Secret for anything that grants access and Variable for
+anything that's just describing where or how to connect.
+
+#### 0.9.c — GitHub Environments, by hand
+
+**Settings → Environments**: create three environments named exactly
+`development`, `staging`, `production` (the names must match the
+`environment:` keys in `.github/workflows/ai-release.yml`'s `deploy-*`
+jobs exactly, or that job fails to find its environment). Add a
+**required reviewer on all three** — `development` and `staging`, not
+just `production`.
+
+This is a deliberate cost control, and it's worth understanding why
+before you skip it as "just do production." Each of the three
+environments provisions its own real Foundry deployment, Azure AI
+Search service, and Azure AI Content Safety account (see ADR 0001's
+sizing table) — three times the standing Azure spend of one environment,
+not a fraction of it. `deploy-staging` needs `deploy-dev`, and
+`deploy-production` needs `deploy-staging`, so the three jobs already
+only ever run one at a time, in order — but "in order" and "gated"
+aren't the same thing. Without a required reviewer on `development` and
+`staging`, **every merge to `main`** provisions or updates both of those
+two environments automatically, with nobody in the loop, and only pauses
+for a human at the very last step. With a required reviewer on all
+three, a merge to `main` queues `deploy-dev` but goes no further until
+someone approves it — same for the step from dev into staging, and
+staging into production — so nothing spends money until a person looks
+at that specific promotion and decides it's worth it. For a class that
+might repeat Part 4.3 more than once, this is the difference between "one
+approved deploy" and "N merges × two unattended environment provisions
+each" by the time everyone's done.
+
+Optional but recommended: **Settings → Branches**, protect `main`, and
+require the four PR checks (`deterministic-tests`, `code-scanning`,
+`cloud-eval`, `release-gate`) before merge is allowed.
+
+Full explanation of the credential architecture (which job uses which
+kind of Azure credential, and why): README.md "CI/CD and cloud
 credentials."
 
 ---
@@ -553,12 +711,20 @@ ahead of the class).
 
 Revert the change to `PROMPT_VERSION: baseline` (or point it at
 `candidate_fixed`) and push again — the same jobs now pass, and on a
-merge to `main`, three deploy jobs run in sequence:
-`deploy-dev` (automatic) → `deploy-staging` (automatic, only after dev's
-`verify_deployment.py` passes) → `deploy-production` (gated behind the
-`production` GitHub Environment's required-reviewer approval). All three
-promote the exact same built image (this commit's SHA) through
-`nimbus-dev` → `nimbus-staging` → `nimbus-production` — see
+merge to `main`, three deploy jobs queue up in sequence:
+`deploy-dev` → `deploy-staging` (only after dev succeeds) →
+`deploy-production` (only after staging succeeds). **Every one of the
+three**, not just production, is gated behind its own GitHub
+Environment's required-reviewer approval (see 0.9.c) — a deliberate cost
+control, since each environment is a real, separately-billed Foundry +
+Search + Content Safety stack, not a free promotion step. Go to the PR's
+**Deployments** view (or the Actions run) and you'll see `deploy-dev`
+sitting in a "Waiting" state until someone with reviewer rights clicks
+**Review deployments → Approve**; only then does it actually provision
+or update anything, and only then does `deploy-staging` even queue up to
+wait for its own approval, and likewise for `deploy-production` after
+that. All three promote the exact same built image (this commit's SHA)
+through `nimbus-dev` → `nimbus-staging` → `nimbus-production` — see
 `docs/adr/0001-foundry-and-multiagent.md` for why each environment is
 sized differently (Search tier, Foundry capacity, Container App min
 replicas) even though the code and image are identical across all three.

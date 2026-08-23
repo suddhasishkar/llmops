@@ -110,7 +110,7 @@ azd up
 ```
 
 `azd up` provisions every resource this app needs (a Microsoft Foundry
-account + project + `gpt-4o-mini` deployment, a LiteLLM gateway Container
+account + project + `gpt-5-mini` deployment, a LiteLLM gateway Container
 App every agent role calls instead of Foundry directly -- see
 `docs/adr/0002-llm-gateway-and-observability.md` -- Azure AI Search,
 Azure AI Content Safety, two Container Apps (`api` + `gateway`), Azure
@@ -177,11 +177,19 @@ deliberately kept separate:
 - **`deploy-dev` → `deploy-staging` → `deploy-production`** promote the
   same built image through three real `azd` environments
   (`nimbus-dev`/`nimbus-staging`/`nimbus-production`) on every merge to
-  `main` — dev and staging deploy automatically, production is gated
-  behind a GitHub Environment with required reviewers. See
-  `docs/adr/0001-foundry-and-multiagent.md` for why each environment is
-  sized differently and why `nimbus-production` here is presentation-grade,
-  not built to take real customer traffic.
+  `main` — **all three** are gated behind a GitHub Environment with
+  required reviewers, not just production. A merge to `main` queues
+  `deploy-dev`, but it waits for an approval click before it provisions
+  or updates anything billable; `deploy-staging` and `deploy-production`
+  each wait for their own separate approval in turn, so at most one
+  environment is ever mid-deploy and nothing spends Azure money without
+  someone deliberately approving that specific promotion. This is a
+  deliberate cost control for a training/lab setting — three real Azure
+  environments (each with its own Foundry, Search, and Content Safety
+  resources) would otherwise get provisioned back-to-back on every merge
+  with no chance to stop between them. See `docs/adr/0001-foundry-and-multiagent.md`
+  for why each environment is sized differently and why `nimbus-production`
+  here is presentation-grade, not built to take real customer traffic.
 All three `deploy-*` jobs use the standard `azd pipeline config`-managed
 OIDC credentials (`AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/
 `AZURE_SUBSCRIPTION_ID` secrets, `AZURE_LOCATION` variable) and only run

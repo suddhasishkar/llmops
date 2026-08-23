@@ -31,6 +31,19 @@ name: AI Release Pipeline
 #     distinct identity per environment with only that resource group's
 #     Contributor role.
 #
+# COST GATE: all three of `development`, `staging`, and `production` are
+# GitHub Environments with a required reviewer configured (see
+# Day1_Lab_Guide.md 0.9.c) -- none of the three deploy jobs below runs
+# unattended. A merge to main queues deploy-dev, but it sits waiting for
+# an approval click before it provisions/updates anything billable;
+# deploy-staging and deploy-production likewise each wait for their own
+# separate approval once the job ahead of them finishes, so at most one
+# of the three is ever mid-deploy at a time and nothing spends money
+# without a human deciding, right then, that this specific promotion is
+# worth it. This is a deliberate lab-cost control, not GitHub's default --
+# a fresh GitHub Environment has no required reviewer until one is added
+# in repo settings.
+#
 # code-scanning is a clearly-labeled PLACEHOLDER stage (see
 # scripts/mock_security_scan.py's own docstring for the full real-tool
 # swap-in mapping -- Semgrep/Gitleaks/Trivy/Checkov/SonarQube) -- a
@@ -157,10 +170,12 @@ jobs:
         run: python -m eval.gate_or_fail --decision eval/results/decision.json
 
   # ---------------------------------------------------------------------
-  # THREE-ENVIRONMENT PROMOTION -- dev (auto) -> staging (auto, after dev
-  # verifies) -> production (manual-approved GitHub Environment). Same
-  # built artifact (this commit's SHA) is promoted through all three, not
-  # rebuilt per environment. See docs/adr/0001-foundry-and-multiagent.md's
+  # THREE-ENVIRONMENT PROMOTION -- dev (manual-approved) -> staging
+  # (manual-approved, after dev verifies) -> production (manual-approved).
+  # Every stage is a separate required-reviewer approval, on purpose --
+  # see the COST GATE note above the credentials list at the top of this
+  # file. Same built artifact (this commit's SHA) is promoted through all
+  # three, not rebuilt per environment. See docs/adr/0001-foundry-and-multiagent.md's
   # environment-sizing table for why dev/staging/production get different
   # Search/Content Safety/Foundry-capacity/min-replica settings below --
   # this is the minimum-cost, presentation-grade sizing, not production
@@ -179,7 +194,7 @@ jobs:
     needs: release-gate
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: development
+    environment: development   # GitHub Environment with required reviewers = human-approval gate (cost control, see header note)
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -223,7 +238,7 @@ jobs:
     needs: deploy-dev
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: staging
+    environment: staging   # GitHub Environment with required reviewers = human-approval gate (cost control, see header note)
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -267,7 +282,7 @@ jobs:
     needs: deploy-staging
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: production   # GitHub Environment with required reviewers = human-approval gate
+    environment: production   # GitHub Environment with required reviewers = human-approval gate (cost control, see header note)
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
