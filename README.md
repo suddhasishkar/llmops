@@ -156,24 +156,39 @@ deliberately kept separate:
   real-tool swap-in points). No Azure credentials, free on every PR.
 - **`cloud-eval`** makes real Foundry, Azure AI Search, and Azure AI
   Content Safety calls on every PR, against a **persistent shared eval
-  environment** — not any of the three deployed environments below.
-  Stand this up once (an instructor/admin task, not a per-trainee one):
-  provision one more `azd env` (e.g. `azd env new nimbus-eval && azd up`)
-  dedicated to CI, then add its values as repo secrets/variables:
+  environment** — not any of the three deployed environments below. This
+  is the one job in the whole pipeline with a genuine, unavoidable
+  per-run cost, so it's **opt-in**: it only runs if the repo variable
+  `ENABLE_CLOUD_EVAL` is set to `true` (see `ai-release.yml`'s header
+  comment). Left unset, `cloud-eval` shows as skipped, not failed, on
+  every PR, and — since `release-gate` needs `cloud-eval` and each
+  `deploy-*` job needs `release-gate` — that skip cascades cleanly
+  through the rest of the pipeline with no further configuration
+  (GitHub Actions' documented default: a job whose `needs` was skipped
+  is itself skipped). `Day1_Lab_Guide.md`'s Part 0 explains why this is
+  off by default for the training lab specifically: none of Part 5's
+  required deliverables depend on it.
+
+  To turn it on: stand this up once (an instructor/admin task, not a
+  per-trainee one) — provision one more `azd env` (e.g.
+  `azd env new nimbus-eval && azd up`) dedicated to CI, then add its
+  values as repo secrets/variables:
 
   | Name | Kind | Value |
   |---|---|---|
   | `EVAL_AZURE_CLIENT_ID` / `EVAL_AZURE_TENANT_ID` / `EVAL_AZURE_SUBSCRIPTION_ID` | secret | An app registration with OIDC federation trusting `repo:<org>/<repo>:pull_request` (same pattern as below, its own federated credential) |
   | `EVAL_AZURE_OPENAI_ENDPOINT`, `EVAL_AZURE_OPENAI_DEPLOYMENT`, `EVAL_AZURE_SEARCH_ENDPOINT`, `EVAL_AZURE_CONTENT_SAFETY_ENDPOINT` | variable | `azd env get-values` from that eval environment |
+  | `ENABLE_CLOUD_EVAL` | variable | `true` — the last step, and the only one that actually turns spending on |
 
-  There is no mocking of agent behavior anywhere in this pipeline — a
-  manager-routing call, a specialist tool-decision call, a retrieval
-  call, and a content-safety call all really happen on every PR against
-  this shared environment. This is the accepted trade-off for removing
-  every local/offline fallback from the application code itself: CI now
-  costs real (small) Azure spend on every PR, in exchange for CI results
-  that can never diverge from production behavior the way a stubbed
-  pipeline's could.
+  There is no mocking of agent behavior anywhere in this pipeline when
+  it runs — a manager-routing call, a specialist tool-decision call, a
+  retrieval call, and a content-safety call all really happen on every
+  PR against this shared environment. This is the accepted trade-off for
+  removing every local/offline fallback from the application code
+  itself: with `cloud-eval` on, CI costs real (small) Azure spend on
+  every PR, in exchange for CI results that can never diverge from
+  production behavior the way a stubbed pipeline's could — a trade-off
+  worth making deliberately, per repo, not defaulting to on.
 - **`deploy-dev` → `deploy-staging` → `deploy-production`** promote the
   same built image through three real `azd` environments
   (`nimbus-dev`/`nimbus-staging`/`nimbus-production`) on every merge to
