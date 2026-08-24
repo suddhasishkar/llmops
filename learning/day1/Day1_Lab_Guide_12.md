@@ -356,7 +356,7 @@ per-run cost — real Azure OpenAI/Search/Content Safety calls — and it's
 `ENABLE_CLOUD_EVAL` that `ai-release.yml`'s header comment documents in
 full. Leave it unset and rows 4–5 below don't apply to you at all: skip
 0.9.b entirely, skip straight to row 6. Nothing in Part 5's required
-deliverables needs `cloud-eval` to have ever run — see the note at the
+deliverables needs `cloud-eval` to  have ever run — see the note at the
 top of this Part 0 section. Only work through rows 4–5 and flip the
 variable on if you specifically want Part 4.3's live demonstration.
 
