@@ -28,7 +28,7 @@ and both incident labs, run end to end); `Agent_End_to_End_Architecture.md`
 for the whole system's request lifecycle and component map;
 `Dataset_and_Evaluation_Guide.md` for exactly what every evaluation
 dataset and knowledge document contains and how it drives the release
-gate.
+gate. 
 
 ## Quick start
 
