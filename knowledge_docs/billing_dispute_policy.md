@@ -14,3 +14,7 @@ general billing dispute; only after specialist review, or when the
 customer explicitly and specifically requests a credit or refund for a
 confirmed error, should a credit be proposed — and even then, always
 subject to human approval before it can take effect.
+
+If the customer disagrees with the outcome of the specialist's review,
+they should contact a billing specialist through the same support
+channel to request further escalation.
