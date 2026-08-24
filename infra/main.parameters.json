@@ -34,6 +34,9 @@
     },
     "langfuseHost": {
       "value": "${LANGFUSE_HOST=https://cloud.langfuse.com}"
+    },
+    "deployFoundryProject": {
+      "value": "${DEPLOY_FOUNDRY_PROJECT=true}"
     }
   }
 }

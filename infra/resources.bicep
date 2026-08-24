@@ -65,6 +65,9 @@ param langfuseSecretKey string = ''
 @description('Langfuse host. Defaults to Langfuse Cloud; override only if self-hosting Langfuse instead (not this repo\'s default -- see ADR 0002).')
 param langfuseHost string = 'https://cloud.langfuse.com'
 
+@description('Escape hatch for a real Azure race between the Foundry account\'s managed identity propagating and project creation validating it -- see main.bicep\'s param doc-comment and Day1_Lab_Guide.md\'s troubleshooting table for the two-phase `azd provision` workaround. Leave true for a normal deployment.')
+param deployFoundryProject bool = true
+
 var namePrefix = 'nimbus-${resourceToken}'
 
 // ---------------------------------------------------------------------
@@ -257,7 +260,12 @@ resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   }
 }
 
-resource foundryProject 'Microsoft.CognitiveServices/accounts/projects@2025-06-01' = {
+// Conditional on deployFoundryProject (default true, so a normal `azd up`
+// creates this in the same pass) purely as an escape hatch for the
+// account-identity-propagation race described on that param above --
+// nothing else in this file depends on this resource existing, so
+// skipping it here is always safe to do temporarily.
+resource foundryProject 'Microsoft.CognitiveServices/accounts/projects@2025-06-01' = if (deployFoundryProject) {
   parent: foundryAccount
   name: '${namePrefix}-project'
   location: location

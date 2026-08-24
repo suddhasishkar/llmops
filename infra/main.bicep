@@ -64,6 +64,9 @@ param langfuseSecretKey string = ''
 @description('Langfuse host -- defaults to Langfuse Cloud. Override only if self-hosting Langfuse instead. Set with: azd env set LANGFUSE_HOST https://your-langfuse-host')
 param langfuseHost string = 'https://cloud.langfuse.com'
 
+@description('Whether to create the Foundry PROJECT (resources.bicep\'s foundryProject) in this provision pass. Leave true for a normal `azd up` -- this only exists as an escape hatch for a real, intermittent Azure race: the Foundry account\'s managed identity can take a short time to propagate through the Cognitive Services resource provider\'s own internal state after being newly assigned, and project creation validates against that internal state, not against what ARM already shows you via `az cognitiveservices account show`. If `azd up` fails with "BadRequest: Unsupported configuration. To create projects, you must enable a managed identity on your resource" even though the account genuinely has SystemAssigned identity (confirmed via that az command), do a two-phase provision instead of retrying the same combined deployment: `azd env set DEPLOY_FOUNDRY_PROJECT false && azd provision` (creates the account with its identity, nothing else changes), then `azd env set DEPLOY_FOUNDRY_PROJECT true && azd provision` (a genuinely separate deployment, run once the first has had a few minutes to settle -- this creates just the project). See Day1_Lab_Guide.md\'s troubleshooting table.')
+param deployFoundryProject bool = true
+
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
 var tags = {
   'azd-env-name': environmentName
@@ -91,6 +94,7 @@ module resources 'resources.bicep' = {
     langfusePublicKey: langfusePublicKey
     langfuseSecretKey: langfuseSecretKey
     langfuseHost: langfuseHost
+    deployFoundryProject: deployFoundryProject
   }
 }
 
