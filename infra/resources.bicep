@@ -347,7 +347,15 @@ resource openAiRoleForUser 'Microsoft.Authorization/roleAssignments@2022-04-01' 
 resource litellmGateway 'Microsoft.App/containerApps@2023-11-02-preview' = {
   name: '${namePrefix}-gateway'
   location: location
-  tags: tags
+  // azd-service-name is required here, same as the api container app
+  // below -- without it `azd deploy`/`azd up` has no way to match the
+  // `gateway` service (azure.yaml) to THIS resource, so it can never
+  // overwrite the mcr.microsoft.com/azuredocs/containerapps-helloworld
+  // bootstrap image below with the real LiteLLM build. Missing this tag
+  // was a real bug: it silently left every environment's gateway stuck
+  // on the placeholder image forever, listening on :80 instead of the
+  // real proxy on :4000.
+  tags: union(tags, { 'azd-service-name': 'gateway' })
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {

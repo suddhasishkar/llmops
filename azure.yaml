@@ -30,6 +30,13 @@ services:
     host: containerapp
     docker:
       path: Dockerfile
+      # Builds in Azure Container Registry (az acr build) instead of on
+      # your own machine -- sidesteps a broken local Docker daemon
+      # entirely (e.g. "network bridge not found"). Slightly slower than
+      # a warm local build, but doesn't depend on your local Docker
+      # networking being healthy. Flip back to false/remove once your
+      # local Docker is fixed, if you'd rather build locally.
+      remoteBuild: true
 
   gateway:
     project: ./gateway
@@ -37,6 +44,7 @@ services:
     host: containerapp
     docker:
       path: Dockerfile
+      remoteBuild: true
 
 hooks:
   # Runs once, automatically, after infra/main.bicep finishes provisioning
@@ -52,7 +60,12 @@ hooks:
       run: |
         set -e
         echo "== Installing dependencies (postprovision) =="
-        pip install -r requirements.txt --break-system-packages --quiet
+        # --user installs into your own home directory
+        # (~/.local/lib/pythonX.Y/site-packages) instead of the system
+        # site-packages -- on most Linux setups your user doesn't own the
+        # latter, so --break-system-packages alone still hits a Permission
+        # denied error there. --user sidesteps that without needing sudo.
+        pip install --user -r requirements.txt --break-system-packages --quiet
         echo "== Building and seeding the real Azure AI Search index =="
         python -m scripts.build_search_index
       interactive: true
@@ -60,7 +73,7 @@ hooks:
     windows:
       shell: pwsh
       run: |
-        pip install -r requirements.txt --break-system-packages --quiet
+        pip install --user -r requirements.txt --break-system-packages --quiet
         python -m scripts.build_search_index
       interactive: true
       continueOnError: false
