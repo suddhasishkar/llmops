@@ -65,7 +65,16 @@ def judge_case(case: dict, prompt_version: str) -> dict:
                 {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": judge_user_prompt},
             ],
-            temperature=0,
+            # No temperature= here on purpose. This used to pass
+            # temperature=0 for judge-call determinism, but the deployed
+            # model (gpt-5-mini) rejects any non-default value outright --
+            # "Unsupported value: 'temperature' does not support 0 with
+            # this model. Only the default (1) value is supported." --
+            # which failed every single case in this (informational-only,
+            # non-blocking) suite with a 400. Omit the param entirely and
+            # let the model use its own default; this suite was never
+            # meant to be bitwise-deterministic anyway (see
+            # informational_only above), just a rough signal.
             response_format={"type": "json_object"},
         )
         parsed = json.loads(response.choices[0].message.content)
