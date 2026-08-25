@@ -1,6 +1,6 @@
 // infra/resources.bicep -- everything that actually gets created, at
 // resource-group scope. Deployed by infra/main.bicep as a module.
-//
+//updated 
 // Key Vault (below) holds the two real secrets this repo has --
 // litellmMasterKey and langfuseSecretKey, both introduced by ADR 0002.
 // Every OTHER service still auths via managed identity only, no key.
