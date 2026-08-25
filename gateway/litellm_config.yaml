@@ -5,7 +5,7 @@
 # directly, via app/agent/azure_openai_client.py -- see
 # docs/adr/0002-llm-gateway-and-observability.md for why and for the
 # trade-offs named below.
-#
+##
 # Deliberately stateless: no DATABASE_URL is set anywhere in this
 # project (see infra/resources.bicep's litellmGateway resource -- no
 # Postgres is provisioned for it), so this runs LiteLLM's plain
