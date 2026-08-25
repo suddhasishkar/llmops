@@ -74,7 +74,17 @@ def get_client():
             "runs, `azd env get-values` and export it the same way."
         )
 
-    return OpenAI(base_url=f"{endpoint.rstrip('/')}/v1", api_key=api_key)
+    # Explicit timeout + retry budget -- without these, the openai SDK's own
+    # defaults apply (openai._constants: 600s read timeout, max_retries=2),
+    # which means a single stuck/cold-starting gateway call can silently
+    # occupy up to ~30 minutes (600s x up to 3 attempts with backoff) before
+    # ever raising, with zero output in between. That is exactly what a CI
+    # step "stuck since 11min" looks like: it isn't hung forever, it just
+    # hasn't finished retrying yet. 60s/attempt, 1 retry keeps the worst case
+    # under ~3 minutes and turns a silent CI hang into a fast, visible
+    # failure that names the real problem (gateway unreachable/unhealthy)
+    # instead of masking it behind a long, unexplained wait.
+    return OpenAI(base_url=f"{endpoint.rstrip('/')}/v1", api_key=api_key, timeout=60.0, max_retries=1)
 
 
 def get_deployment_name() -> str:

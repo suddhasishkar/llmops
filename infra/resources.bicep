@@ -398,9 +398,25 @@ resource litellmGateway 'Microsoft.App/containerApps@2023-11-02-preview' = {
         {
           name: 'litellm-gateway'
           image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest' // overwritten by `azd deploy`'s gateway service build -- same bootstrap-then-overwrite pattern as the api container app below
+          // 1 vCPU / 4Gi, not the api container app's smaller footprint --
+          // this matches LiteLLM's own published minimum
+          // (https://docs.litellm.ai/docs/proxy/prod: "Give each pod 1 vCPU
+          // and 4Gi of memory... provision below 4Gi and a single large
+          // write is enough to push the pod past its limit and have the
+          // kernel OOM-kill it, which surfaces as a crash loop"). This was
+          // previously 0.5 vCPU / 1Gi, which is a real bug, not a
+          // presentation-grade simplification: the gateway container
+          // OOM-kills during its own startup import (Prisma's query engine
+          // + the rest of the litellm package) before it ever binds port
+          // 4000, so Container Apps never gets a successful liveness probe
+          // and the revision permanently shows `ActivationFailed` /
+          // `Deployment Progress Deadline Exceeded` -- an OOM-kill is a
+          // kernel SIGKILL, so the container also never gets a chance to
+          // write a single log line, which is why this failure mode looks
+          // completely silent in `az containerapp logs show`.
           resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
+            cpu: json('1.0')
+            memory: '4Gi'
           }
           env: [
             { name: 'AZURE_OPENAI_ENDPOINT', value: foundryAccount.properties.endpoint }
