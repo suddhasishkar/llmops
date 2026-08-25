@@ -9,6 +9,7 @@ gates a release on -- but until this script existed, nobody in this
 program had ever actually generated a real number to check against that
 threshold. See planning/Interview_Readiness_Enrichment_Plan.md item A5.
 
+
 WHAT THIS SCRIPT DELIBERATELY DOES NOT DO: report a canned "expected"
 result. Run it yourself against your own deployment (see README.md "Real
 Azure deployment" for how to stand one up) and the number it prints is a
